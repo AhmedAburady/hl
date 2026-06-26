@@ -4,7 +4,7 @@ import (
 	"context"
 	"os"
 
-	"github.com/AhmedAburady/homelab-dns/cmd"
+	"github.com/AhmedAburady/hl/cmd"
 	"github.com/charmbracelet/fang"
 )
 

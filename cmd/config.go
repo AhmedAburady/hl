@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/AhmedAburady/homelab-dns/internal/config"
+	"github.com/AhmedAburady/hl/internal/config"
 	"github.com/spf13/cobra"
 )
 

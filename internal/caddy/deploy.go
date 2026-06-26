@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/AhmedAburady/homelab-dns/internal/config"
-	"github.com/AhmedAburady/homelab-dns/internal/sshx"
+	"github.com/AhmedAburady/hl/internal/config"
+	"github.com/AhmedAburady/hl/internal/sshx"
 )
 
 // ReadLocalFile reads the local Caddyfile, returning an empty string if it

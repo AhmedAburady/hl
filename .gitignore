@@ -3,7 +3,6 @@
 
 # Compiled binaries and build output
 /hl
-/homelab-dns
 /dist/
 *.exe
 *.exe~

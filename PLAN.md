@@ -1,4 +1,4 @@
-# homelab-dns — Implementation Plan
+# hl — Implementation Plan
 
 A Go 1.26 CLI for a homelab that, in one command:
 
@@ -20,7 +20,7 @@ A Go 1.26 CLI for a homelab that, in one command:
 | File push          | `github.com/pkg/sftp`                               |
 | HTTP (Technitium)  | stdlib `net/http`                                   |
 
-Module: `github.com/AhmedAburady/homelab-dns`, `go 1.26.4`. Binary: `homelab-dns`.
+Module: `github.com/AhmedAburady/hl`, `go 1.26.4`. Binary: `hl` (invoked as `hl`; built with `go build -o hl .`).
 
 ---
 

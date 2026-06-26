@@ -4,8 +4,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/AhmedAburady/homelab-dns/internal/prompt"
-	"github.com/AhmedAburady/homelab-dns/internal/technitium"
+	"github.com/AhmedAburady/hl/internal/prompt"
+	"github.com/AhmedAburady/hl/internal/technitium"
 	"github.com/spf13/cobra"
 )
 

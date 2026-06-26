@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/AhmedAburady/homelab-dns/internal/caddy"
-	"github.com/AhmedAburady/homelab-dns/internal/config"
-	"github.com/AhmedAburady/homelab-dns/internal/prompt"
-	"github.com/AhmedAburady/homelab-dns/internal/technitium"
+	"github.com/AhmedAburady/hl/internal/caddy"
+	"github.com/AhmedAburady/hl/internal/config"
+	"github.com/AhmedAburady/hl/internal/prompt"
+	"github.com/AhmedAburady/hl/internal/technitium"
 	"github.com/spf13/cobra"
 )
 

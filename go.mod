@@ -1,4 +1,4 @@
-module github.com/AhmedAburady/homelab-dns
+module github.com/AhmedAburady/hl
 
 go 1.26.4
 

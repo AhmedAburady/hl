@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/AhmedAburady/homelab-dns/internal/caddy"
+	"github.com/AhmedAburady/hl/internal/caddy"
 	"github.com/spf13/cobra"
 )
 

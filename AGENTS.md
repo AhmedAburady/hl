@@ -3,7 +3,7 @@
 This is the **hl** repository: a Go 1.26 CLI that adds Caddy `reverse_proxy`
 blocks to a local Caddyfile, deploys them over SSH, and adds matching A/CNAME
 records to a Technitium DNS zone. The invoked command is `hl`; the Go module is
-`github.com/AhmedAburady/homelab-dns`.
+`github.com/AhmedAburady/hl`.
 
 Key facts:
 - Build the runnable binary as `hl`: `go build -o hl .`. Compile-all: `go build ./...`.
@@ -61,7 +61,7 @@ with Huh prompts only as a fallback for missing required values.
   `slog.Warn`, but a known-hosts **mismatch must be rejected**. Do not switch to
   `ssh.InsecureIgnoreHostKey`.
 - Do not rename the invoked command away from `hl` or the module path
-  `github.com/AhmedAburady/homelab-dns` unless the user explicitly asks.
+  `github.com/AhmedAburady/hl` unless the user explicitly asks.
 - Do not add Bubble Tea / full-TUI behavior; this tool is command-driven. Huh
   prompts are only for missing required inputs.
 - Do not widen scope to the Caddy Admin API; this tool edits a local Caddyfile

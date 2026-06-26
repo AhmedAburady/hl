@@ -18,18 +18,22 @@ re-deploy with `hl caddy sync`.
 
 ## Install
 
-The command is invoked as `hl`. Build it directly so the binary is named `hl`:
+The command is invoked as `hl`.
+
+**Install with Go** (puts `hl` on your `$GOPATH/bin`):
 
 ```sh
-git clone https://github.com/AhmedAburady/homelab-dns.git
-cd homelab-dns
+go install github.com/AhmedAburady/hl@latest
+```
+
+**Or build from source:**
+
+```sh
+git clone https://github.com/AhmedAburady/hl.git
+cd hl
 go build -o hl .
 sudo mv hl /usr/local/bin/   # or anywhere on your PATH
 ```
-
-> `go install github.com/AhmedAburady/homelab-dns@latest` also works, but Go
-> names the resulting binary `homelab-dns` (the last module path segment).
-> Symlink it if you prefer: `ln -s "$(which homelab-dns)" /usr/local/bin/hl`.
 
 Verify:
 
@@ -173,6 +177,6 @@ go test ./...      # unit tests (Caddyfile parser + Technitium client)
 go fix ./...       # apply safe Go modernizations
 ```
 
-Module: `github.com/AhmedAburady/homelab-dns`, Go 1.26. Internal packages live
+Module: `github.com/AhmedAburady/hl`, Go 1.26. Internal packages live
 under `internal/` (`config`, `caddy`, `technitium`, `sshx`, `prompt`); the
 Cobra command tree is in `cmd/`. See `AGENTS.md` for contributor guidance.
