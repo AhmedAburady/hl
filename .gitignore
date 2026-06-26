@@ -1,0 +1,30 @@
+# Research / scraping cache (firecrawl)
+.firecrawl/
+
+# Compiled binaries and build output
+/hl
+/homelab-dns
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Test and profiling artifacts
+coverage.out
+coverage.html
+*.prof
+*.pprof
+
+# Go workspace files
+go.work
+go.work.sum
+
+# Editor and OS
+.idea/
+.vscode/
+.DS_Store
+
