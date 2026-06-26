@@ -42,12 +42,19 @@ type Config struct {
 	path string
 }
 
+// DefaultPath returns the config file path: $XDG_CONFIG_HOME/hl/config.yaml if
+// XDG_CONFIG_HOME is set, otherwise ~/.config/hl/config.yaml on both macOS and
+// Linux.
 func DefaultPath() string {
-	if dir, err := os.UserConfigDir(); err == nil {
-		return filepath.Join(dir, "homelab-dns", "config.yaml")
+	dir := os.Getenv("XDG_CONFIG_HOME")
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return filepath.Join("hl", "config.yaml")
+		}
+		dir = filepath.Join(home, ".config")
 	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "homelab-dns", "config.yaml")
+	return filepath.Join(dir, "hl", "config.yaml")
 }
 
 func setDefaults(v *viper.Viper) {

@@ -45,8 +45,8 @@ hl --help
 hl config init
 
 # 2. Edit it with your details (path is printed by the command above)
-#    On macOS it's ~/Library/Application Support/homelab-dns/config.yaml
-#    On Linux it's ~/.config/homelab-dns/config.yaml
+#    Lives at ~/.config/hl/config.yaml on both macOS and Linux
+#    (or $XDG_CONFIG_HOME/hl/config.yaml if XDG_CONFIG_HOME is set)
 
 # 3. Create and save a Technitium API token
 hl dns login

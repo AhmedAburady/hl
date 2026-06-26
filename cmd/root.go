@@ -20,7 +20,7 @@ to the Caddy host over SSH and reloads Caddy, and adds a matching A or CNAME
 record to a Technitium DNS zone.`,
 	}
 	root.PersistentFlags().StringVarP(&configPath, "config", "c", "",
-		"path to config file (default $XDG_CONFIG_HOME/homelab-dns/config.yaml)")
+		"path to config file (default ~/.config/hl/config.yaml)")
 
 	root.AddCommand(newAddCmd(), newCaddyCmd(), newDNSCmd(), newConfigCmd())
 	return root

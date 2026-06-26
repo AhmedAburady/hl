@@ -69,7 +69,7 @@ caddy/                      module root
 
 ## 4. Configuration
 
-Path: `~/.config/homelab-dns/config.yaml` (override via `--config` or `HLDNS_*` env).
+Path: `~/.config/hl/config.yaml` (or `$XDG_CONFIG_HOME/hl/config.yaml` if set; override via `--config` or `HLDNS_*` env).
 Env binding: `HLDNS_TECHNITIUM_TOKEN`, `HLDNS_CADDY_REMOTE_HOST`, etc.
 
 ```yaml
