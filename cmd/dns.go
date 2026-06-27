@@ -14,50 +14,7 @@ func newDNSCmd() *cobra.Command {
 		Use:   "dns",
 		Short: "Manage Technitium DNS records",
 	}
-	cmd.AddCommand(newDNSAddCmd(), newDNSListCmd(), newDNSLoginCmd())
-	return cmd
-}
-
-func newDNSAddCmd() *cobra.Command {
-	var (
-		rtype     string
-		value     string
-		zone      string
-		ttl       int
-		overwrite bool
-		comments  string
-	)
-	cmd := &cobra.Command{
-		Use:   "add [domain]",
-		Short: "Add an A or CNAME record to a Technitium zone",
-		Args:  cobra.MaximumNArgs(1),
-		Example: `
-  hl dns add app.home.lab --type CNAME --value caddy.home.lab.
-  hl dns add app.home.lab --type A --value 192.168.1.10 --overwrite`,
-		RunE: func(c *cobra.Command, args []string) error {
-			cfg, err := loadCfg()
-			if err != nil {
-				return err
-			}
-			domain := ""
-			if len(args) > 0 {
-				domain = args[0]
-			}
-			if domain == "" || value == "" || zone == "" {
-				domain, value, zone, err = prompt.ForDNSAdd(domain, value, zone)
-				if err != nil {
-					return err
-				}
-			}
-			return addDNSRecord(c, cfg, domain, zone, ttl, rtype, "A", value, comments, overwrite)
-		},
-	}
-	cmd.Flags().StringVar(&rtype, "type", "", "record type: A or CNAME (default A)")
-	cmd.Flags().StringVar(&value, "value", "", "record value (IP for A, target for CNAME)")
-	cmd.Flags().StringVar(&zone, "zone", "", "DNS zone (default technitium.default_zone)")
-	cmd.Flags().IntVar(&ttl, "ttl", 0, "TTL in seconds (0 = server default)")
-	cmd.Flags().BoolVar(&overwrite, "overwrite", false, "replace existing record set for this type")
-	cmd.Flags().StringVar(&comments, "comments", "", "comments for the record")
+	cmd.AddCommand(newDNSListCmd(), newDNSLoginCmd())
 	return cmd
 }
 
@@ -134,7 +91,7 @@ func newDNSLoginCmd() *cobra.Command {
 	cmd.Flags().StringVar(&user, "user", "", "Technitium admin user")
 	cmd.Flags().StringVar(&pass, "pass", "", "Technitium admin password")
 	cmd.Flags().StringVar(&totp, "totp", "", "2FA code; required if the account has 2FA enabled (prompted only when --user/--pass are omitted)")
-	cmd.Flags().StringVar(&name, "token-name", "", "name for the created token (default hl)")
+	cmd.Flags().StringVar(&name, "token-name", "hl", "name for the created token")
 	return cmd
 }
 

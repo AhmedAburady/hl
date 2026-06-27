@@ -56,16 +56,116 @@ func UpsertReverseProxy(content, host, upstream string, force bool) (string, *Up
 	return joinLines(out), res, nil
 }
 
-// ListHosts returns the address labels of all top-level site blocks.
-func ListHosts(content string) []string {
-	blocks := parseTopLevelBlocks(splitLines(content))
-	hosts := make([]string, 0, len(blocks))
+// Site is a parsed top-level site block: its host label, the single-line
+// reverse_proxy upstream (empty if none or block-form), and the DNS directive
+// declared in the comment group directly above it.
+type Site struct {
+	Host     string
+	Upstream string
+	DNS      DNSAnnotation
+}
+
+// ParseSites returns every top-level site block with its host, upstream, and any
+// DNS directive. It is the read path for sync/status. An invalid directive above
+// a block is a hard error.
+func ParseSites(content string) ([]Site, error) {
+	lines := splitLines(content)
+	blocks := parseTopLevelBlocks(lines)
+	sites := make([]Site, 0, len(blocks))
 	for _, b := range blocks {
-		if b.label != "" {
-			hosts = append(hosts, b.label)
+		if b.label == "" {
+			continue
+		}
+		a, err := parseAnnotation(commentGroupAbove(lines, b.openLine))
+		if err != nil {
+			return nil, fmt.Errorf("site %s: %w", b.label, err)
+		}
+		sites = append(sites, Site{
+			Host:     b.label,
+			Upstream: blockUpstream(lines, b),
+			DNS:      a,
+		})
+	}
+	return sites, nil
+}
+
+// UpsertDNSAnnotation inserts or replaces the DNS directive line in the comment
+// group directly above host's block. Other comments in the group are preserved.
+func UpsertDNSAnnotation(content, host string, a DNSAnnotation) (string, error) {
+	host = strings.TrimSpace(host)
+	if !a.Present || strings.TrimSpace(a.Name) == "" {
+		return "", errors.New("DNS annotation requires a record name")
+	}
+	lines := splitLines(content)
+	blocks := parseTopLevelBlocks(lines)
+	idx := findBlock(blocks, host)
+	if idx < 0 {
+		return "", fmt.Errorf("no site block for host %s", host)
+	}
+	directive := formatDNSAnnotation(a)
+
+	// Find an existing directive line within the comment group above the block.
+	start := commentGroupStart(lines, blocks[idx].openLine)
+	for i := start; i < blocks[idx].openLine; i++ {
+		text, ok := commentText(lines[i])
+		if !ok {
+			continue
+		}
+		if _, isDirective, _ := parseDirectiveLine(text); isDirective {
+			out := append([]string(nil), lines...)
+			out[i] = directive
+			return joinLines(out), nil
 		}
 	}
-	return hosts
+
+	// None present: insert directly above the opening line.
+	out := append([]string(nil), lines[:blocks[idx].openLine]...)
+	out = append(out, directive)
+	out = append(out, lines[blocks[idx].openLine:]...)
+	return joinLines(out), nil
+}
+
+// commentGroupStart returns the index of the first line in the contiguous run of
+// comment lines ending just above openLine (== openLine if there are none).
+func commentGroupStart(lines []string, openLine int) int {
+	start := openLine
+	for j := openLine - 1; j >= 0; j-- {
+		if _, ok := commentText(lines[j]); !ok {
+			break
+		}
+		start = j
+	}
+	return start
+}
+
+// commentGroupAbove returns the contiguous comment lines directly above openLine.
+func commentGroupAbove(lines []string, openLine int) []string {
+	start := commentGroupStart(lines, openLine)
+	return lines[start:openLine]
+}
+
+// blockUpstream returns the argument of a top-level single-line reverse_proxy
+// directive in the block, or "" if none (or block-form).
+func blockUpstream(lines []string, b siteBlock) string {
+	relDepth := 0
+	for i := b.openLine + 1; i < b.closeLine; i++ {
+		braces := braceRunes(lines[i])
+		if relDepth == 0 {
+			stripped := stripComment(lines[i])
+			if firstField(stripped) == "reverse_proxy" && !endsWithOpenBrace(stripped) {
+				fields := strings.Fields(stripped)
+				if len(fields) >= 2 {
+					return fields[1]
+				}
+				return ""
+			}
+		}
+		relDepth += countBraces(braces)
+		if relDepth < 0 {
+			relDepth = 0
+		}
+	}
+	return ""
 }
 
 // ----- parsing -----
@@ -211,7 +311,7 @@ func updateBlock(lines []string, b siteBlock, upstream string, force bool) ([]st
 
 	if rpLine >= 0 {
 		raw := lines[rpLine]
-		if hasOpenBrace(stripComment(raw)) {
+		if endsWithOpenBrace(stripComment(raw)) {
 			// block form: reverse_proxy { ... }
 			if !force {
 				return nil, false, fmt.Errorf("%w (host %s)", ErrReverseProxyBlock, b.label)
@@ -288,8 +388,12 @@ func firstField(line string) string {
 	return fields[0]
 }
 
-func hasOpenBrace(line string) bool {
-	return strings.ContainsRune(line, '{')
+// endsWithOpenBrace reports whether a directive line opens a block, i.e. its
+// last non-space token is `{`. This distinguishes the block form
+// `reverse_proxy ... {` from a single-line directive whose argument merely
+// contains a brace (e.g. a `{placeholder}` or `{$ENV}` upstream).
+func endsWithOpenBrace(line string) bool {
+	return strings.HasSuffix(strings.TrimSpace(line), "{")
 }
 
 func countBraces(braces []byte) int {

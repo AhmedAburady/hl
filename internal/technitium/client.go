@@ -187,12 +187,69 @@ func (c *Client) AddRecord(ctx context.Context, r AddRecordRequest) error {
 	return nil
 }
 
+// DeleteRecordRequest describes a record to remove from an authoritative zone.
+type DeleteRecordRequest struct {
+	Domain string     // FQDN of the record, e.g. app.home.lab
+	Zone   string     // authoritative zone, e.g. home.lab
+	Type   RecordType // A or CNAME
+	Value  string     // IP for A, target for CNAME (identifies which record)
+}
+
+// DeleteRecord removes a single record from the zone. For A and CNAME records
+// the value is required to identify the specific record within the record set.
+func (c *Client) DeleteRecord(ctx context.Context, r DeleteRecordRequest) error {
+	if r.Domain == "" {
+		return errors.New("domain is required")
+	}
+	if r.Type != TypeA && r.Type != TypeCNAME {
+		return fmt.Errorf("unsupported record type %q (want A or CNAME)", r.Type)
+	}
+	if r.Value == "" {
+		return errors.New("value is required")
+	}
+
+	params := url.Values{}
+	params.Set("domain", r.Domain)
+	if r.Zone != "" {
+		params.Set("zone", r.Zone)
+	}
+	params.Set("type", string(r.Type))
+	params.Set("value", r.Value)
+	switch r.Type {
+	case TypeA:
+		params.Set("ipAddress", r.Value)
+	case TypeCNAME:
+		params.Set("cname", r.Value)
+	}
+
+	if _, err := c.do(ctx, "/api/zones/records/delete", params); err != nil {
+		return err
+	}
+	return nil
+}
+
 // Record is a minimal view of a zone record returned by ListRecords.
 type Record struct {
-	Name  string         `json:"name"`
-	Type  string         `json:"type"`
-	TTL   int            `json:"ttl"`
-	RData map[string]any `json:"rData"`
+	Name     string         `json:"name"`
+	Type     string         `json:"type"`
+	TTL      int            `json:"ttl"`
+	RData    map[string]any `json:"rData"`
+	Comments string         `json:"comments"`
+	Zone     string         `json:"-"` // set by ListRecords from the queried zone
+}
+
+// Value returns the record's primary value (IP for A, target for CNAME),
+// extracted from RData. Empty if no recognized value key is present.
+func (r Record) Value() string {
+	if r.RData == nil {
+		return ""
+	}
+	for _, k := range []string{"ipAddress", "cname"} {
+		if v, ok := r.RData[k]; ok {
+			return fmt.Sprintf("%v", v)
+		}
+	}
+	return ""
 }
 
 // ListRecords returns records for a zone (optionally filtered to a domain).
@@ -218,5 +275,29 @@ func (c *Client) ListRecords(ctx context.Context, zone, domain string) ([]Record
 	if err := json.Unmarshal(ar.Response, &res); err != nil {
 		return nil, fmt.Errorf("decode records list: %w", err)
 	}
+	for i := range res.Records {
+		res.Records[i].Zone = zone
+	}
 	return res.Records, nil
+}
+
+// ListZones returns the names of all authoritative zones the token can view.
+func (c *Client) ListZones(ctx context.Context) ([]string, error) {
+	ar, err := c.do(ctx, "/api/zones/list", nil)
+	if err != nil {
+		return nil, err
+	}
+	var res struct {
+		Zones []struct {
+			Name string `json:"name"`
+		} `json:"zones"`
+	}
+	if err := json.Unmarshal(ar.Response, &res); err != nil {
+		return nil, fmt.Errorf("decode zones list: %w", err)
+	}
+	names := make([]string, 0, len(res.Zones))
+	for _, z := range res.Zones {
+		names = append(names, z.Name)
+	}
+	return names, nil
 }

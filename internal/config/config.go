@@ -26,6 +26,7 @@ type Caddy struct {
 	TargetScheme string `mapstructure:"target_scheme"`
 	CnameTarget  string `mapstructure:"cname_target"`
 	AValue       string `mapstructure:"a_value"`
+	ManagedTag   string `mapstructure:"managed_tag"`
 }
 
 type Technitium struct {
@@ -62,6 +63,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("technitium.default_zone", "")
 	v.SetDefault("caddy.local_file", "Caddyfile")
 	v.SetDefault("caddy.target_scheme", "http")
+	v.SetDefault("caddy.managed_tag", "managed-by:hl")
 	v.SetDefault("caddy.remote.port", 22)
 	v.SetDefault("caddy.remote.remote_path", "/etc/caddy/Caddyfile")
 	v.SetDefault("caddy.remote.reload_cmd", "caddy reload --config /etc/caddy/Caddyfile")

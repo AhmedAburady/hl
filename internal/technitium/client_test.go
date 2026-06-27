@@ -161,7 +161,7 @@ func TestListRecords_Decodes(t *testing.T) {
 			"status": "ok",
 			"response": map[string]any{
 				"records": []any{
-					map[string]any{"name": "app.home.lab", "type": "A", "ttl": 3600, "rData": map[string]any{"ipAddress": "192.168.1.50"}},
+					map[string]any{"name": "app.home.lab", "type": "A", "ttl": 3600, "comments": "managed-by:hl", "rData": map[string]any{"ipAddress": "192.168.1.50"}},
 				},
 			},
 		})
@@ -172,6 +172,74 @@ func TestListRecords_Decodes(t *testing.T) {
 	}
 	if len(recs) != 1 || recs[0].Name != "app.home.lab" || recs[0].Type != "A" {
 		t.Fatalf("got %+v", recs)
+	}
+	if recs[0].Comments != "managed-by:hl" {
+		t.Errorf("comments not parsed: %q", recs[0].Comments)
+	}
+	if recs[0].Value() != "192.168.1.50" {
+		t.Errorf("Value() wrong: %q", recs[0].Value())
+	}
+	if recs[0].Zone != "home.lab" {
+		t.Errorf("Zone not populated from query: %q", recs[0].Zone)
+	}
+}
+
+func TestListZones_Decodes(t *testing.T) {
+	c, _ := startServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/zones/list" {
+			t.Errorf("path wrong: %s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status": "ok",
+			"response": map[string]any{
+				"zones": []any{
+					map[string]any{"name": "home.lab", "type": "Primary"},
+					map[string]any{"name": "synology.com", "type": "Primary"},
+				},
+			},
+		})
+	})
+	zones, err := c.ListZones(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(zones) != 2 || zones[0] != "home.lab" || zones[1] != "synology.com" {
+		t.Fatalf("got %v", zones)
+	}
+}
+
+func TestDeleteRecord_QueryAndOK(t *testing.T) {
+	var got url.Values
+	var path string
+	c, _ := startServer(t, func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		got = r.URL.Query()
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "response": map[string]any{}})
+	})
+	err := c.DeleteRecord(context.Background(), DeleteRecordRequest{
+		Domain: "app.home.lab", Zone: "home.lab", Type: TypeCNAME, Value: "caddy.home.lab.",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if path != "/api/zones/records/delete" {
+		t.Errorf("path wrong: %s", path)
+	}
+	if got.Get("domain") != "app.home.lab" || got.Get("zone") != "home.lab" {
+		t.Errorf("domain/zone wrong: %v", got)
+	}
+	if got.Get("type") != "CNAME" || got.Get("cname") != "caddy.home.lab." || got.Get("value") != "caddy.home.lab." {
+		t.Errorf("type/value wrong: %v", got)
+	}
+}
+
+func TestDeleteRecord_RequiresValue(t *testing.T) {
+	c, _ := startServer(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("server should not be called")
+	})
+	err := c.DeleteRecord(context.Background(), DeleteRecordRequest{Domain: "a", Zone: "z", Type: TypeA})
+	if err == nil {
+		t.Fatal("expected error for missing value")
 	}
 }
 

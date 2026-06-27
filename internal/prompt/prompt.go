@@ -8,9 +8,8 @@ import (
 
 // AddArgs are the values collected for the `add` command.
 type AddArgs struct {
-	Host    string
-	Target  string
-	DNSType string
+	Host   string
+	Target string
 }
 
 // ForAdd prompts for any missing positional values for the add command.
@@ -85,38 +84,4 @@ func ForLogin(user, pass, totp, name string) (LoginArgs, error) {
 		return a, err
 	}
 	return a, nil
-}
-
-// ForDNSAdd prompts for missing pieces of a DNS record.
-func ForDNSAdd(domain, value, zone string) (string, string, string, error) {
-	if domain != "" && value != "" && zone != "" {
-		return domain, value, zone, nil
-	}
-	form := huh.NewForm(huh.NewGroup(
-		huh.NewInput().Title("Record domain (FQDN)").Value(&domain).
-			Validate(func(s string) error {
-				if s == "" {
-					return fmt.Errorf("required")
-				}
-				return nil
-			}),
-		huh.NewInput().Title("Zone").Value(&zone).
-			Validate(func(s string) error {
-				if s == "" {
-					return fmt.Errorf("required")
-				}
-				return nil
-			}),
-		huh.NewInput().Title("Value (IP for A, target for CNAME)").Value(&value).
-			Validate(func(s string) error {
-				if s == "" {
-					return fmt.Errorf("required")
-				}
-				return nil
-			}),
-	))
-	if err := form.Run(); err != nil {
-		return "", "", "", err
-	}
-	return domain, value, zone, nil
 }

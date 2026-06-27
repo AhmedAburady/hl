@@ -15,14 +15,14 @@ func Root() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "hl",
 		Short: "Manage homelab Caddy reverse proxies and Technitium DNS records",
-		Long: `hl adds a reverse_proxy site block to a local Caddyfile, pushes it
-to the Caddy host over SSH and reloads Caddy, and adds a matching A or CNAME
-record to a Technitium DNS zone.`,
+		Long: `hl treats the local Caddyfile as the single source of truth. Each site
+block declares its DNS intent in a comment directly above it; 'hl sync' deploys
+the Caddyfile and reconciles Technitium DNS to match.`,
 	}
 	root.PersistentFlags().StringVarP(&configPath, "config", "c", "",
 		"path to config file (default ~/.config/hl/config.yaml)")
 
-	root.AddCommand(newAddCmd(), newCaddyCmd(), newDNSCmd(), newConfigCmd())
+	root.AddCommand(newAddCmd(), newSyncCmd(), newStatusCmd(), newDNSCmd(), newConfigCmd())
 	return root
 }
 

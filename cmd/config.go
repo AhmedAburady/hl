@@ -58,6 +58,7 @@ func newConfigShowCmd() *cobra.Command {
 			out(c, "  target_scheme: %s", cfg.Caddy.TargetScheme)
 			out(c, "  cname_target:  %s", cfg.Caddy.CnameTarget)
 			out(c, "  a_value:       %s", cfg.Caddy.AValue)
+			out(c, "  managed_tag:   %s", cfg.Caddy.ManagedTag)
 			out(c, "  remote:")
 			out(c, "    host:        %s", cfg.Caddy.Remote.Host)
 			out(c, "    user:        %s", cfg.Caddy.Remote.User)

@@ -140,18 +140,30 @@ func TestUpsertReverseProxy_HostKeyOnOwnLine(t *testing.T) {
 	}
 }
 
-func TestListHosts(t *testing.T) {
+func TestParseSites_HostsAndUpstreams(t *testing.T) {
 	content := "a.home.lab {\n\treverse_proxy http://10.0.0.1:80\n}\n\nb.home.lab {\n\treverse_proxy http://10.0.0.2:80\n}\n"
-	hosts := ListHosts(content)
-	if len(hosts) != 2 || hosts[0] != "a.home.lab" || hosts[1] != "b.home.lab" {
-		t.Fatalf("got %v", hosts)
+	sites, err := ParseSites(content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sites) != 2 || sites[0].Host != "a.home.lab" || sites[1].Host != "b.home.lab" {
+		t.Fatalf("got %+v", sites)
+	}
+	if sites[0].Upstream != "http://10.0.0.1:80" {
+		t.Errorf("upstream wrong: %q", sites[0].Upstream)
+	}
+	if sites[0].DNS.Present {
+		t.Errorf("unannotated block should have no DNS directive")
 	}
 }
 
-func TestListHosts_IgnoresNestedBlocks(t *testing.T) {
+func TestParseSites_IgnoresNestedBlocks(t *testing.T) {
 	content := "app.home.lab {\n\thandle /api/* {\n\t\treverse_proxy http://10.0.0.1:80\n\t}\n}\n"
-	hosts := ListHosts(content)
-	if len(hosts) != 1 || hosts[0] != "app.home.lab" {
-		t.Fatalf("got %v", hosts)
+	sites, err := ParseSites(content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sites) != 1 || sites[0].Host != "app.home.lab" {
+		t.Fatalf("got %+v", sites)
 	}
 }

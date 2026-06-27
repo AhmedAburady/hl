@@ -1,10 +1,15 @@
 # hl — Implementation Plan
 
-A Go 1.26 CLI for a homelab that, in one command:
+A Go 1.26 CLI for a homelab where the **local Caddyfile is the single source of
+truth** for both reverse proxies and DNS. Each site block declares its DNS intent
+in a `# <name> key=value` comment directly above it. `hl sync`:
 
-1. Adds/updates a `reverse_proxy` site block in a **local** Caddyfile (source of
-   truth, hand-editable), pushes it to the Caddy host over SSH, and reloads Caddy.
-2. Adds a matching **A** or **CNAME** record to a Technitium DNS zone via its HTTP API.
+1. Pushes the Caddyfile to the Caddy host over SSH and reloads Caddy.
+2. Reconciles a Technitium DNS zone (via its HTTP API) to match the annotations —
+   creating, updating, and pruning the **A**/**CNAME** records it manages.
+
+DNS reconcile is ownership-scoped via a per-record `managed_tag` comment: only
+records `hl` created are ever updated or deleted; hand-made records are untouched.
 
 ---
 
@@ -52,15 +57,18 @@ caddy/                      module root
   main.go                   fang.Execute(ctx, cmd.Root())
   cmd/
     root.go                 root cmd, --config, version, wiring
-    add.go                  flagship: caddy block + push/reload + dns record
-    caddy.go                caddy add | sync | list
-    dns.go                  dns add | list | login
+    add.go                  scaffold an annotated block, then sync
+    sync.go                 sync (deploy + DNS reconcile); shared runSync/reconcileDNS
+    status.go               read-only: hosts + pending DNS plan
+    dns.go                  dns list | login
     config.go               config init | show
   internal/
     config/config.go        viper struct + load/save/init
-    caddy/caddyfile.go      parse + upsert reverse_proxy block (idempotent)
+    caddy/caddyfile.go      parse blocks + upsert reverse_proxy; ParseSites read model
+    caddy/annotation.go     DNS directive parse/format (# <name> key=value)
     caddy/deploy.go         sftp push local file -> remote + backup + reload
-    technitium/client.go    createToken, addRecord, listRecords (A/CNAME)
+    technitium/client.go    createToken, addRecord, deleteRecord, listRecords (A/CNAME)
+    reconcile/reconcile.go  desired-state derivation + diff (BuildPlan) + apply
     sshx/sshx.go            ctx-aware ssh dial (key/agent), run cmd, sftp push
     prompt/prompt.go        huh forms for missing args / login
 ```
@@ -82,6 +90,7 @@ caddy:
   target_scheme: http                                    # default upstream scheme
   cname_target: caddy.home.lab.                          # default CNAME value
   a_value: 192.168.1.10                                  # default A record IP
+  managed_tag: managed-by:hl                             # DNS ownership tag
   remote:
     host: caddy.home
     user: root
@@ -113,46 +122,60 @@ caddy:
 
 ### 5.3 `internal/technitium`
 - `New(baseURL, token)`.
-- `CreateToken(ctx, user, pass, name) (token, error)` —
+- `CreateToken(ctx, user, pass, totp, name) (token, error)` —
   `GET /api/user/createToken`.
 - `AddRecord(ctx, AddRecordRequest)` —
   `/api/zones/records/add?domain=&zone=&type=A&ipAddress=` or
   `type=CNAME&cname=` plus `ttl`, `overwrite`, `comments`.
-- `ListRecords(ctx, zone, domain)` — `/api/zones/records/get?listZone=true`.
+- `DeleteRecord(ctx, DeleteRecordRequest)` —
+  `/api/zones/records/delete?domain=&zone=&type=&value=` (+`ipAddress`/`cname`).
+- `ListRecords(ctx, zone, domain)` — `/api/zones/records/get?listZone=true`;
+  `Record` captures `comments` (the ownership tag) and exposes `Value()`.
 - Response envelope `{status, errorMessage}`; non-`ok` => typed error.
 
 ### 5.4 `internal/caddy`
-- `UpsertReverseProxy(content, host, upstream string, force bool) (out string, changed bool, err error)`
-  - Brace-depth parser finds top-level site blocks + their address labels.
-  - Match block whose address equals `host` (scheme/port-normalized).
-  - **Found**: update the single simple `reverse_proxy` line in place
-    (preserve other directives); insert one if absent. Multiple/block-form
-    `reverse_proxy` => error unless `--force` (force replaces whole block).
-  - **Not found**: append a canonical block.
-- `ListHosts(content) []string` — for `caddy list`.
+- `UpsertReverseProxy(content, host, upstream string, force bool)` — brace-depth
+  parser, in-place idempotent edit of the simple `reverse_proxy` line (force
+  replaces block-form); appends a canonical block when absent.
+- `UpsertDNSAnnotation(content, host, DNSAnnotation)` — insert/replace the
+  directive line in the comment group above the block, preserving other comments.
+- `ParseSites(content) ([]Site, error)` — read model (`Host`, `Upstream`, `DNS`)
+  consumed by sync/status; invalid directive => error.
+- `annotation.go` — `parseDirectiveLine`/`parseAnnotation` (detection: first token
+  bare + ≥1 recognized `key=value`; unknown key/bad ttl => error) and
+  `formatDNSAnnotation`.
 - `WriteLocalFile(path, content)` — timestamped `.bak` then write.
-- `Deploy(ctx, cfg.Caddy)` — backup remote (`cp <path> <path>.hldns.bak`),
-  sftp push, run `reload_cmd`; on failure restore backup and return remote output.
+- `Deploy(ctx, cfg.Caddy)` — backup remote, sftp push, run `reload_cmd`;
+  on failure restore backup and return remote output.
 
-### 5.5 `internal/prompt`
+### 5.5 `internal/reconcile`
+- `DeriveDesired(sites, cfg)` / `Resolve(ann, cfg)` — annotation → `Desired`
+  (FQDN, zone, type, value, ttl), applying config defaults and type inference
+  (explicit > value-IPv4 > config-default).
+- `BuildPlan(desired, actual, tag)` — diff vs. tagged actual records (by
+  name+type), classifying create / update (value or ttl drift) / delete (tagged
+  orphan). CNAME trailing dot normalized.
+- `Plan.Apply(ctx, client, tag)` — create/update via overwriting `AddRecord`
+  tagged with `tag`; delete via `DeleteRecord`. `Plan.String()` renders the diff.
+
+### 5.6 `internal/prompt`
 - `huh` forms: missing `host`/`target` for `add`; `user`/`pass`/`totp` for `dns login`.
 
 ---
 
 ## 6. Commands
 
-- **`add <host> <target>`** (flagship) — e.g. `add app.home.lab 192.168.1.50:8080`
-  - upstream = `--scheme`/config scheme + target (unless target already has scheme).
-  - upsert local Caddyfile → (unless `--no-deploy`) push + reload →
-    (unless `--no-dns`) add DNS record.
-  - DNS: `--dns-type A|CNAME` (default CNAME), `--dns-value`
-    (default `cname_target` / `a_value`), `--zone` (default `default_zone`),
-    `--ttl`. Flags: `--scheme`, `--no-dns`, `--no-deploy`, `--force`.
-  - Missing positional args => huh prompt.
-- **`caddy add <host> <target>`** — Caddyfile edit + push + reload only.
-- **`caddy sync`** — push current local file + reload.
-- **`caddy list`** — list configured hosts from local Caddyfile.
-- **`dns add <domain>`** — add one A/CNAME record (`--type`,`--value`,`--zone`,`--ttl`,`--overwrite`).
+- **`sync`** — read local Caddyfile → (unless `--no-deploy`) push + reload →
+  (unless `--no-dns`) reconcile DNS via `reconcile.BuildPlan`/`Apply` over the
+  desired set + the default zone. Flags: `--dry-run`, `--no-deploy`, `--no-dns`,
+  `--no-prune`. Shared helpers `runSync`/`reconcileDNS` live here.
+- **`status`** — read-only: list hosts from the local file + print the pending
+  DNS plan (`sync --dry-run` that never deploys). Flag: `--no-prune`.
+- **`add <host> <target>`** — authoring convenience: `UpsertReverseProxy` +
+  (unless `--no-dns`) `UpsertDNSAnnotation` writing resolved `type`/`zone`, then
+  the `sync` flow. Flags: `--scheme`, `--zone`, `--ttl`, `--dns-type`,
+  `--dns-value`, `--no-dns`, `--no-deploy`, `--no-prune`, `--no-sync`, `--force`,
+  `--dry-run`. Missing positional args => huh prompt.
 - **`dns list`** — list records in `--zone`.
 - **`dns login`** — `createToken`, save non-expiring token to config (`--user`,`--pass`,`--totp`,`--token-name` or prompt; `--totp` only if 2FA enabled).
 - **`config init|show`** — scaffold / print effective config (token redacted).
@@ -172,7 +195,10 @@ caddy:
 
 - `go build ./...`, `go vet ./...`, `go fix -diff ./...` review.
 - Unit tests:
-  - `caddyfile_test.go` — insert / update / idempotency / multi-host / force / conflict.
-  - `technitium_test.go` — URL/query building + envelope handling via `httptest`.
-- Manual smoke: `config init`, `dns login`, `add app.home.lab 192.168.1.50:8080`
-  against the real Technitium + Caddy host.
+  - `caddyfile_test.go` — insert / update / idempotency / multi-host / force / conflict; `ParseSites`.
+  - `annotation_test.go` — directive detection, prose-comment skip, unknown-key/multi-directive errors, upsert round-trip.
+  - `reconcile_test.go` — `DeriveDesired` defaults/overrides/zone/type inference; `BuildPlan` create/update/delete + tag filtering + CNAME dot equivalence.
+  - `client_test.go` — URL/query building, envelope handling, `DeleteRecord`, comments parsing, via `httptest`.
+- Manual smoke: `config init`, `dns login`, annotate a block, `hl status` then
+  `hl sync` against the real Technitium + Caddy host. Confirm a removed block's
+  managed record is pruned while a hand-made record in the zone is untouched.
