@@ -4,20 +4,11 @@ import (
 	"testing"
 
 	"github.com/AhmedAburady/hl/internal/caddy"
-	"github.com/AhmedAburady/hl/internal/config"
 	"github.com/AhmedAburady/hl/internal/technitium"
 )
 
-func cfg() config.Config {
-	c := config.Config{}
-	c.Technitium.DefaultZone = "home.lab"
-	c.Caddy.AValue = "192.168.1.10"
-	c.Caddy.CnameTarget = "caddy.home.lab."
-	return c
-}
-
 func ann(name string, set func(*caddy.DNSAnnotation)) caddy.Site {
-	a := caddy.DNSAnnotation{Name: name, Present: true}
+	a := caddy.DNSAnnotation{Name: name, Zone: "home.lab", Value: "caddy.home.lab.", Present: true}
 	if set != nil {
 		set(&a)
 	}
@@ -25,7 +16,7 @@ func ann(name string, set func(*caddy.DNSAnnotation)) caddy.Site {
 }
 
 func TestDeriveDesired_ExplicitType(t *testing.T) {
-	got, err := DeriveDesired([]caddy.Site{ann("dsm", func(a *caddy.DNSAnnotation) { a.Type = "CNAME" })}, cfg())
+	got, err := DeriveDesired([]caddy.Site{ann("dsm", func(a *caddy.DNSAnnotation) { a.Type = "CNAME" })})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +27,7 @@ func TestDeriveDesired_ExplicitType(t *testing.T) {
 }
 
 func TestDeriveDesired_InfersTypeFromValue(t *testing.T) {
-	got, err := DeriveDesired([]caddy.Site{ann("nas", func(a *caddy.DNSAnnotation) { a.Value = "10.0.0.5" })}, cfg())
+	got, err := DeriveDesired([]caddy.Site{ann("nas", func(a *caddy.DNSAnnotation) { a.Value = "10.0.0.5" })})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,37 +36,48 @@ func TestDeriveDesired_InfersTypeFromValue(t *testing.T) {
 	}
 }
 
-func TestDeriveDesired_ValueOverride(t *testing.T) {
-	got, _ := DeriveDesired([]caddy.Site{ann("x", func(a *caddy.DNSAnnotation) {
-		a.Type = "A"
-		a.Value = "1.2.3.4"
-	})}, cfg())
-	if got[0].Value != "1.2.3.4" {
-		t.Fatalf("override ignored: %+v", got[0])
-	}
-}
-
 func TestDeriveDesired_ZoneOverrideAndFQDN(t *testing.T) {
 	got, _ := DeriveDesired([]caddy.Site{ann("dsm", func(a *caddy.DNSAnnotation) {
 		a.Type = "CNAME"
 		a.Zone = "synology.com"
-	})}, cfg())
+	})})
 	if got[0].Domain != "dsm.synology.com" || got[0].Zone != "synology.com" {
 		t.Fatalf("got %+v", got[0])
 	}
 }
 
 func TestDeriveDesired_NoZoneErrors(t *testing.T) {
-	c := config.Config{}
-	c.Caddy.CnameTarget = "caddy."
-	_, err := DeriveDesired([]caddy.Site{ann("x", func(a *caddy.DNSAnnotation) { a.Type = "CNAME" })}, c)
+	_, err := DeriveDesired([]caddy.Site{ann("x", func(a *caddy.DNSAnnotation) { a.Zone = "" })})
 	if err == nil {
 		t.Fatal("expected zone error")
 	}
 }
 
+func TestDeriveDesired_NoValueErrors(t *testing.T) {
+	_, err := DeriveDesired([]caddy.Site{ann("x", func(a *caddy.DNSAnnotation) { a.Value = "" })})
+	if err == nil {
+		t.Fatal("expected value error")
+	}
+}
+
+func TestDeriveDesired_IPv6WithoutTypeErrors(t *testing.T) {
+	_, err := DeriveDesired([]caddy.Site{ann("x", func(a *caddy.DNSAnnotation) { a.Value = "2001:db8::1" })})
+	if err == nil {
+		t.Fatal("expected error inferring type for an IPv6 value")
+	}
+}
+
+func TestBuildPlan_PrunesAllWhenDesiredEmpty(t *testing.T) {
+	// Removing every annotation must still prune the records hl created.
+	actual := []technitium.Record{rec("orphan.home.lab", "A", "9.9.9.9", tag)}
+	p := BuildPlan(nil, actual, tag)
+	if len(p.Delete) != 1 {
+		t.Fatalf("expected orphan pruned with empty desired, got %+v", p)
+	}
+}
+
 func TestDeriveDesired_SkipsUnannotated(t *testing.T) {
-	got, err := DeriveDesired([]caddy.Site{{Host: "plain.home.lab"}}, cfg())
+	got, err := DeriveDesired([]caddy.Site{{Host: "plain.home.lab"}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -41,7 +41,7 @@ type Client struct {
 }
 
 // New returns a client for the Technitium server at baseURL authenticated with
-// token (created via CreateToken / dns login).
+// token (an API token created in the Technitium web UI).
 func New(baseURL, token string) *Client {
 	return &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
@@ -113,38 +113,6 @@ func (c *Client) do(ctx context.Context, path string, params url.Values) (*apiRe
 		return &ar, &APIError{Status: ar.Status, ErrorMessage: ar.ErrorMessage, ErrorCode: ar.ErrorCode}
 	}
 	return &ar, nil
-}
-
-// CreateToken creates a persistent API token for the given user/password. If
-// the account has 2FA enabled, totp must be a current authenticator code;
-// otherwise it may be empty. The caller should persist the returned token via
-// config.SetToken.
-func (c *Client) CreateToken(ctx context.Context, user, pass, totp, name string) (string, error) {
-	params := url.Values{}
-	params.Set("user", user)
-	params.Set("pass", pass)
-	if totp != "" {
-		params.Set("totp", totp)
-	}
-	params.Set("tokenName", name)
-	params.Set("includeInfo", "false")
-
-	ar, err := c.do(ctx, "/api/user/createToken", params)
-	if err != nil {
-		return "", err
-	}
-
-	// createToken returns { token: "...", ... } inside response.
-	var info struct {
-		Token string `json:"token"`
-	}
-	if err := json.Unmarshal(ar.Response, &info); err != nil {
-		return "", fmt.Errorf("decode createToken response: %w", err)
-	}
-	if info.Token == "" {
-		return "", errors.New("createToken returned empty token")
-	}
-	return info.Token, nil
 }
 
 // AddRecord adds (or, with Overwrite, replaces) a record in the zone.
@@ -281,8 +249,12 @@ func (c *Client) ListRecords(ctx context.Context, zone, domain string) ([]Record
 	return res.Records, nil
 }
 
-// ListZones returns the names of all authoritative zones the token can view.
-func (c *Client) ListZones(ctx context.Context) ([]string, error) {
+// ListPrimaryZones returns the names of Primary (authoritative) zones the token
+// can view. The zones/list endpoint returns every zone type (Secondary, Stub,
+// Forwarder, ...); hl only writes records into Primary zones, so the rest are
+// excluded — they would not hold managed records and may not enumerate the same
+// way.
+func (c *Client) ListPrimaryZones(ctx context.Context) ([]string, error) {
 	ar, err := c.do(ctx, "/api/zones/list", nil)
 	if err != nil {
 		return nil, err
@@ -290,6 +262,7 @@ func (c *Client) ListZones(ctx context.Context) ([]string, error) {
 	var res struct {
 		Zones []struct {
 			Name string `json:"name"`
+			Type string `json:"type"`
 		} `json:"zones"`
 	}
 	if err := json.Unmarshal(ar.Response, &res); err != nil {
@@ -297,7 +270,9 @@ func (c *Client) ListZones(ctx context.Context) ([]string, error) {
 	}
 	names := make([]string, 0, len(res.Zones))
 	for _, z := range res.Zones {
-		names = append(names, z.Name)
+		if z.Type == "Primary" {
+			names = append(names, z.Name)
+		}
 	}
 	return names, nil
 }

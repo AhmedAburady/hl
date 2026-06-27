@@ -85,22 +85,21 @@ func reconcileDNS(c *cobra.Command, cfg *config.Config, content string, dryRun, 
 	if err != nil {
 		return err
 	}
-	desired, err := reconcile.DeriveDesired(sites, *cfg)
+	desired, err := reconcile.DeriveDesired(sites)
 	if err != nil {
 		return err
 	}
-	if len(desired) == 0 {
+	// With no annotations and no token, there is nothing to manage — don't force
+	// the user to configure a token. But if a token IS set, still reconcile so
+	// that removing the last annotation prunes the records it previously created.
+	if len(desired) == 0 && cfg.Technitium.Token == "" {
 		out(c, "DNS: no managed records declared in %s", cfg.Caddy.LocalFile)
 		return nil
 	}
-	if cfg.Technitium.Token == "" {
-		return errors.New("technitium.token is not set; run `hl dns login` first")
+	cl, err := technitiumClient(c, cfg)
+	if err != nil {
+		return err
 	}
-	if cfg.Technitium.URL == "" {
-		return errors.New("technitium.url is not configured")
-	}
-
-	cl := technitium.New(cfg.Technitium.URL, cfg.Technitium.Token)
 	actual, err := listManagedRecords(c, cl)
 	if err != nil {
 		return err
@@ -127,12 +126,31 @@ func reconcileDNS(c *cobra.Command, cfg *config.Config, content string, dryRun, 
 	return nil
 }
 
+// technitiumClient builds an authenticated client, resolving the configured
+// token (literal, ${ENV}, or an op:// 1Password reference) at the point of use.
+func technitiumClient(c *cobra.Command, cfg *config.Config) (*technitium.Client, error) {
+	if cfg.Technitium.URL == "" {
+		return nil, errors.New("technitium.url is not configured")
+	}
+	if cfg.Technitium.Token == "" {
+		return nil, errors.New("technitium.token is not set (Technitium UI API token; literal, ${ENV}, or op://...)")
+	}
+	token, err := config.ResolveSecret(c.Context(), cfg.Technitium.Token)
+	if err != nil {
+		return nil, err
+	}
+	if token == "" {
+		return nil, fmt.Errorf("technitium.token %q resolved to an empty value", cfg.Technitium.Token)
+	}
+	return technitium.New(cfg.Technitium.URL, token), nil
+}
+
 // listManagedRecords fetches records across every authoritative zone on the
 // server. Scanning all zones (rather than only those currently referenced by the
 // Caddyfile) ensures a managed record is still pruned after the block that
 // created it changes zones or is removed entirely.
 func listManagedRecords(c *cobra.Command, cl *technitium.Client) ([]technitium.Record, error) {
-	zones, err := cl.ListZones(c.Context())
+	zones, err := cl.ListPrimaryZones(c.Context())
 	if err != nil {
 		return nil, fmt.Errorf("list zones: %w", err)
 	}

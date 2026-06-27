@@ -105,50 +105,6 @@ func TestAddRecord_Validation(t *testing.T) {
 	}
 }
 
-func TestCreateToken_ParsesToken(t *testing.T) {
-	c, _ := startServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/user/createToken" {
-			t.Errorf("path wrong: %s", r.URL.Path)
-		}
-		if r.URL.Query().Get("user") != "admin" || r.URL.Query().Get("tokenName") != "cli" {
-			t.Errorf("params wrong: %v", r.URL.Query())
-		}
-		if r.URL.Query().Get("totp") != "123456" {
-			t.Errorf("totp wrong: %v", r.URL.Query().Get("totp"))
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"status":   "ok",
-			"response": map[string]any{"token": "abc123"},
-		})
-	})
-	tok, err := c.CreateToken(context.Background(), "admin", "secret", "123456", "cli")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if tok != "abc123" {
-		t.Fatalf("got token %q want abc123", tok)
-	}
-}
-
-func TestCreateToken_OmitsEmptyTOTP(t *testing.T) {
-	c, _ := startServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := r.URL.Query()["totp"]; ok {
-			t.Errorf("totp param should be absent for non-2FA login, got %v", r.URL.Query())
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"status":   "ok",
-			"response": map[string]any{"token": "abc123"},
-		})
-	})
-	tok, err := c.CreateToken(context.Background(), "admin", "secret", "", "cli")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if tok != "abc123" {
-		t.Fatalf("got token %q want abc123", tok)
-	}
-}
-
 func TestListRecords_Decodes(t *testing.T) {
 	c, _ := startServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/zones/records/get" {
@@ -184,7 +140,7 @@ func TestListRecords_Decodes(t *testing.T) {
 	}
 }
 
-func TestListZones_Decodes(t *testing.T) {
+func TestListPrimaryZones_FiltersToPrimary(t *testing.T) {
 	c, _ := startServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/zones/list" {
 			t.Errorf("path wrong: %s", r.URL.Path)
@@ -194,17 +150,19 @@ func TestListZones_Decodes(t *testing.T) {
 			"response": map[string]any{
 				"zones": []any{
 					map[string]any{"name": "home.lab", "type": "Primary"},
+					map[string]any{"name": "fwd.example", "type": "Forwarder"},
+					map[string]any{"name": "sec.example", "type": "Secondary"},
 					map[string]any{"name": "synology.com", "type": "Primary"},
 				},
 			},
 		})
 	})
-	zones, err := c.ListZones(context.Background())
+	zones, err := c.ListPrimaryZones(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(zones) != 2 || zones[0] != "home.lab" || zones[1] != "synology.com" {
-		t.Fatalf("got %v", zones)
+		t.Fatalf("expected only Primary zones, got %v", zones)
 	}
 }
 

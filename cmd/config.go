@@ -27,7 +27,7 @@ func newConfigInitCmd() *cobra.Command {
 				return fmt.Errorf("init config: %w", err)
 			}
 			out(c, "Wrote default config to %s", path)
-			out(c, "Edit it with your Technitium URL/zone and Caddy SSH details, then run `hl dns login`.")
+			out(c, "Edit it with your Technitium URL + API token (from the Technitium UI) and Caddy SSH details.")
 			return nil
 		},
 	}
@@ -52,13 +52,9 @@ func newConfigShowCmd() *cobra.Command {
 			out(c, "technitium:")
 			out(c, "  url:          %s", cfg.Technitium.URL)
 			out(c, "  token:        %s", token)
-			out(c, "  default_zone: %s", cfg.Technitium.DefaultZone)
 			out(c, "caddy:")
 			out(c, "  local_file:   %s", cfg.Caddy.LocalFile)
-			out(c, "  target_scheme: %s", cfg.Caddy.TargetScheme)
-			out(c, "  cname_target:  %s", cfg.Caddy.CnameTarget)
-			out(c, "  a_value:       %s", cfg.Caddy.AValue)
-			out(c, "  managed_tag:   %s", cfg.Caddy.ManagedTag)
+			out(c, "  managed_tag:  %s", cfg.Caddy.ManagedTag)
 			out(c, "  remote:")
 			out(c, "    host:        %s", cfg.Caddy.Remote.Host)
 			out(c, "    user:        %s", cfg.Caddy.Remote.User)

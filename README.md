@@ -5,7 +5,7 @@ truth** for both reverse proxies and DNS. Each site block declares its DNS inten
 in a comment directly above it, and one command keeps everything in sync:
 
 ```
-# dsm type=CNAME zone=synology.com
+# dsm type=CNAME zone=synology.com value=caddy.home.lab.
 dsm.synology.com {
 	reverse_proxy 127.0.0.1:5003
 }
@@ -64,11 +64,9 @@ hl config init
 #    Lives at ~/.config/hl/config.yaml on both macOS and Linux
 #    (or $XDG_CONFIG_HOME/hl/config.yaml if XDG_CONFIG_HOME is set)
 
-# 3. Create and save a Technitium API token
-hl dns login
-#    Prompts for your Technitium admin user + password (and a 2FA code if
-#    your account has 2FA enabled), then saves a non-expiring token.
-#    Non-interactive: hl dns login --user admin --pass 'secret' --totp 123456
+# 3. Create an API token in the Technitium web UI
+#    Administration → Sessions → Create Token. Copy the token string and put it in
+#    technitium.token in the config (or an op:// / ${ENV} reference — see below).
 
 # 4. Check the effective config (token is redacted)
 hl config show
@@ -79,14 +77,11 @@ hl config show
 ```yaml
 technitium:
   url: http://dns.home:5380       # Technitium web API base URL
-  token: ""                       # set automatically by `hl dns login`
-  default_zone: home.lab          # zone used when --zone is omitted
+  token: ""                       # API token from the Technitium UI;
+                                  # literal, ${ENV_VAR}, or op://vault/item/field
 
 caddy:
   local_file: /Users/you/HomeLab/caddy/Caddyfile   # source of truth
-  target_scheme: http             # default upstream scheme when target has none
-  cname_target: caddy.home.lab.   # default value for CNAME records
-  a_value: 192.168.1.10           # default value for A records
   managed_tag: managed-by:hl      # ownership tag written to records hl manages
   remote:
     host: caddy.home              # SSH host for the Caddy server
@@ -96,6 +91,14 @@ caddy:
     remote_path: /etc/caddy/Caddyfile
     reload_cmd: "caddy reload --config /etc/caddy/Caddyfile"
 ```
+
+There are no DNS defaults in config: the Caddyfile is the sole source of truth, so
+each managed block must declare its `zone` and `value` in its annotation.
+
+The token is resolved at use time: a plain string is used as-is, a value
+containing `${VAR}` is expanded from the environment, and an `op://vault/item/field`
+reference is read from 1Password via the `op` CLI (which must be installed and
+signed in). There is no login step — create the token once in the Technitium UI.
 
 Any value can be overridden with an environment variable prefixed `HLDNS_`, with
 dots replaced by underscores. Examples:
@@ -114,19 +117,19 @@ above** it. The first token is the record's short name; the rest are `key=value`
 attributes:
 
 ```caddyfile
-# dsm type=CNAME zone=synology.com
+# dsm type=CNAME zone=synology.com value=caddy.home.lab.
 dsm.synology.com {
 	reverse_proxy 127.0.0.1:5003
 }
 ```
 
-| Key | Default | Meaning |
+| Key | Required | Meaning |
 | --- | --- | --- |
-| `<name>` (leading word) | — | record short name; with `zone` forms the FQDN |
-| `type` | inferred from value (IPv4 ⇒ A, else CNAME) | `A` or `CNAME` |
-| `zone` | `technitium.default_zone` | authoritative zone |
-| `value` | `caddy.a_value` / `caddy.cname_target` | record value |
-| `ttl` | 0 (server default) | TTL in seconds |
+| `<name>` (leading word) | yes | record short name; with `zone` forms the FQDN |
+| `zone` | yes | authoritative zone (no config default — fail if absent) |
+| `value` | yes | record value (no config default — fail if absent) |
+| `type` | no | `A` or `CNAME`; inferred from value (IPv4 ⇒ A, else CNAME) |
+| `ttl` | no | TTL in seconds (0 = server default) |
 
 A block with no such directive is left out of DNS entirely (Caddy-only). Ordinary
 comments (no `key=value`) are ignored, so keep prose notes on their own and avoid
@@ -153,30 +156,8 @@ hl status
 Lists the hosts in your Caddyfile and the pending DNS plan (`+` create, `~`
 update, `-` delete) — a read-only `sync --dry-run` that never deploys.
 
-### `hl add` — scaffold an annotated block, then sync
-
-```sh
-hl add app.home.lab 192.168.1.50:8080
-```
-
-Writes the `reverse_proxy` block **and** its `# app type=… zone=…` directive into
-the local Caddyfile, then runs the `sync` flow. It's just a convenient editor; the
-same result comes from hand-editing the file and running `hl sync`.
-
-| Flag | Default | Description |
-| --- | --- | --- |
-| `--scheme` | from config (`http`) | upstream scheme when the target has none |
-| `--zone` | `technitium.default_zone` | zone written into the annotation |
-| `--ttl` | 0 | TTL written into the annotation |
-| `--dns-type` | inferred | `A` or `CNAME` |
-| `--dns-value` | from config | pins a value override into the annotation |
-| `--no-dns` | false | don't write an annotation or reconcile DNS |
-| `--no-deploy` | false | skip the Caddy deploy step |
-| `--no-prune` | false | don't delete managed records absent from the file |
-| `--no-sync` | false | edit the local Caddyfile only; don't deploy or touch DNS |
-| `--force` | false | overwrite an existing block-form `reverse_proxy` |
-| `--dry-run` | false | show the plan without writing, deploying, or modifying DNS |
-| `-c, --config` | default path | path to a config file |
+You edit the Caddyfile directly — add a block, add its annotation — then run
+`hl sync`. There is no `add` command: the file is the source of truth.
 
 ### All commands
 
@@ -184,22 +165,9 @@ same result comes from hand-editing the file and running `hl sync`.
 | --- | --- |
 | `hl sync` | Deploy the Caddyfile and reconcile DNS from annotations |
 | `hl status` | Show hosts + the pending DNS plan (read-only) |
-| `hl add [host] [target]` | Scaffold an annotated block, then sync |
-| `hl dns list` | List records in a zone (`--zone`) |
-| `hl dns login` | Create a Technitium API token and save it |
+| `hl dns list` | List records in a zone (`--zone`, required) |
 | `hl config init` | Write a default config file |
 | `hl config show` | Print effective config (token redacted) |
-
-`hl dns login` flags: `--user`, `--pass`, `--totp` (2FA code, only if the
-account has 2FA enabled), `--token-name` (label for the token in Technitium's
-Administration → Sessions list, default `hl`). The token is non-expiring, so
-a 2FA code is needed only once at login.
-
-> **Migration from earlier versions:** the separate write commands `hl dns add`,
-> `hl caddy add`, `hl caddy sync`, and `hl caddy list` were removed. Annotate your
-> blocks and use `hl sync`; preview with `hl status`. The first reconcile is
-> effectively additive — existing records are only adopted/pruned once they carry
-> the `managed-by:hl` tag, which `hl` sets on records it creates.
 
 ## Safety
 

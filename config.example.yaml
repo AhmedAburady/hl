@@ -1,0 +1,14 @@
+technitium:
+  url: http://192.168.1.10:5380
+  token: op://Homelab/technitium/token
+
+caddy:
+  local_file: ./Caddyfile
+  managed_tag: managed-by:hl
+  remote:
+    host: 192.168.1.20
+    user: root
+    port: 22
+    key: ~/.ssh/id_ed25519
+    remote_path: /etc/caddy/Caddyfile
+    reload_cmd: caddy reload --config /etc/caddy/Caddyfile

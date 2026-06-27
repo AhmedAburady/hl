@@ -20,7 +20,6 @@ records `hl` created are ever updated or deleted; hand-made records are untouche
 | Command framework  | `github.com/spf13/cobra`                            |
 | CLI polish         | `github.com/charmbracelet/fang` (help/errors/version/completions) |
 | Config             | `github.com/spf13/viper`                            |
-| Interactive prompts| `github.com/charmbracelet/huh`                      |
 | SSH transport      | `golang.org/x/crypto/ssh` (+ `agent`, `knownhosts`) |
 | File push          | `github.com/pkg/sftp`                               |
 | HTTP (Technitium)  | stdlib `net/http`                                   |
@@ -57,20 +56,19 @@ caddy/                      module root
   main.go                   fang.Execute(ctx, cmd.Root())
   cmd/
     root.go                 root cmd, --config, version, wiring
-    add.go                  scaffold an annotated block, then sync
     sync.go                 sync (deploy + DNS reconcile); shared runSync/reconcileDNS
     status.go               read-only: hosts + pending DNS plan
     dns.go                  dns list | login
     config.go               config init | show
   internal/
-    config/config.go        viper struct + load/save/init
+    config/config.go        viper struct + load/init
+    config/secret.go        token resolution: literal | ${ENV} | op:// (op read)
     caddy/caddyfile.go      parse blocks + upsert reverse_proxy; ParseSites read model
     caddy/annotation.go     DNS directive parse/format (# <name> key=value)
     caddy/deploy.go         sftp push local file -> remote + backup + reload
-    technitium/client.go    createToken, addRecord, deleteRecord, listRecords (A/CNAME)
+    technitium/client.go    addRecord, deleteRecord, listRecords, listZones (A/CNAME)
     reconcile/reconcile.go  desired-state derivation + diff (BuildPlan) + apply
     sshx/sshx.go            ctx-aware ssh dial (key/agent), run cmd, sftp push
-    prompt/prompt.go        huh forms for missing args / login
 ```
 
 ---
@@ -83,13 +81,9 @@ Env binding: `HLDNS_TECHNITIUM_TOKEN`, `HLDNS_CADDY_REMOTE_HOST`, etc.
 ```yaml
 technitium:
   url: http://dns.home:5380
-  token: ""              # set by `dns login`
-  default_zone: home.lab
+  token: ""              # API token from Technitium UI; literal | ${ENV} | op://...
 caddy:
   local_file: /Users/ahmabora1/HomeLab/caddy/Caddyfile   # source of truth
-  target_scheme: http                                    # default upstream scheme
-  cname_target: caddy.home.lab.                          # default CNAME value
-  a_value: 192.168.1.10                                  # default A record IP
   managed_tag: managed-by:hl                             # DNS ownership tag
   remote:
     host: caddy.home
@@ -107,7 +101,8 @@ caddy:
 ### 5.1 `internal/config`
 - `Load(path)` — viper + defaults + env; missing file ignored via
   `errors.AsType[*fs.PathError]`.
-- `SetToken(token)` — persist token (`WriteConfigAs`).
+- `ResolveSecret(ctx, s)` — token resolution at use time: `op://...` via
+  `op read`, `${ENV}` via `os.Expand`, else literal.
 - `Init(path)` — `SafeWriteConfigAs` default file (fails if exists).
 
 ### 5.2 `internal/sshx`
@@ -122,8 +117,6 @@ caddy:
 
 ### 5.3 `internal/technitium`
 - `New(baseURL, token)`.
-- `CreateToken(ctx, user, pass, totp, name) (token, error)` —
-  `GET /api/user/createToken`.
 - `AddRecord(ctx, AddRecordRequest)` —
   `/api/zones/records/add?domain=&zone=&type=A&ipAddress=` or
   `type=CNAME&cname=` plus `ttl`, `overwrite`, `comments`.
@@ -149,36 +142,34 @@ caddy:
   on failure restore backup and return remote output.
 
 ### 5.5 `internal/reconcile`
-- `DeriveDesired(sites, cfg)` / `Resolve(ann, cfg)` — annotation → `Desired`
-  (FQDN, zone, type, value, ttl), applying config defaults and type inference
-  (explicit > value-IPv4 > config-default).
+- `DeriveDesired(sites)` / `Resolve(ann)` — annotation → `Desired`
+  (FQDN, zone, type, value, ttl). Zone and value are required (no config
+  defaults); type is `type=` or inferred from the value (IPv4 => A, else CNAME).
 - `BuildPlan(desired, actual, tag)` — diff vs. tagged actual records (by
-  name+type), classifying create / update (value or ttl drift) / delete (tagged
-  orphan). CNAME trailing dot normalized.
-- `Plan.Apply(ctx, client, tag)` — create/update via overwriting `AddRecord`
-  tagged with `tag`; delete via `DeleteRecord`. `Plan.String()` renders the diff.
-
-### 5.6 `internal/prompt`
-- `huh` forms: missing `host`/`target` for `add`; `user`/`pass`/`totp` for `dns login`.
+  name+type), dedupes desired, classifying create / update (value drift, or
+  explicit ttl drift) / delete (tagged orphan, carrying the record's zone). CNAME
+  trailing dot normalized.
+- `Plan.Apply(ctx, client, tag)` — deletes first (so A<->CNAME flips converge),
+  then create/update via overwriting `AddRecord` tagged with `tag`.
+  `Plan.String()` renders the diff.
 
 ---
 
 ## 6. Commands
 
 - **`sync`** — read local Caddyfile → (unless `--no-deploy`) push + reload →
-  (unless `--no-dns`) reconcile DNS via `reconcile.BuildPlan`/`Apply` over the
-  desired set + the default zone. Flags: `--dry-run`, `--no-deploy`, `--no-dns`,
-  `--no-prune`. Shared helpers `runSync`/`reconcileDNS` live here.
+  (unless `--no-dns`) reconcile DNS via `reconcile.BuildPlan`/`Apply`, scanning
+  all authoritative zones (`technitium.ListZones`) so orphans are pruned. Flags:
+  `--dry-run`, `--no-deploy`, `--no-dns`, `--no-prune`. Shared helpers
+  `runSync`/`reconcileDNS` live here.
 - **`status`** — read-only: list hosts from the local file + print the pending
   DNS plan (`sync --dry-run` that never deploys). Flag: `--no-prune`.
-- **`add <host> <target>`** — authoring convenience: `UpsertReverseProxy` +
-  (unless `--no-dns`) `UpsertDNSAnnotation` writing resolved `type`/`zone`, then
-  the `sync` flow. Flags: `--scheme`, `--zone`, `--ttl`, `--dns-type`,
-  `--dns-value`, `--no-dns`, `--no-deploy`, `--no-prune`, `--no-sync`, `--force`,
-  `--dry-run`. Missing positional args => huh prompt.
-- **`dns list`** — list records in `--zone`.
-- **`dns login`** — `createToken`, save non-expiring token to config (`--user`,`--pass`,`--totp`,`--token-name` or prompt; `--totp` only if 2FA enabled).
+- **`dns list`** — list records in `--zone` (required).
 - **`config init|show`** — scaffold / print effective config (token redacted).
+
+Auth: the Technitium API token is created once in the web UI and stored in
+`technitium.token` (literal, `${ENV}`, or `op://` reference). There is no login
+command.
 
 ---
 
@@ -199,6 +190,6 @@ caddy:
   - `annotation_test.go` — directive detection, prose-comment skip, unknown-key/multi-directive errors, upsert round-trip.
   - `reconcile_test.go` — `DeriveDesired` defaults/overrides/zone/type inference; `BuildPlan` create/update/delete + tag filtering + CNAME dot equivalence.
   - `client_test.go` — URL/query building, envelope handling, `DeleteRecord`, comments parsing, via `httptest`.
-- Manual smoke: `config init`, `dns login`, annotate a block, `hl status` then
+- Manual smoke: `config init`, create a Technitium API token in the UI, annotate a block, `hl status` then
   `hl sync` against the real Technitium + Caddy host. Confirm a removed block's
   managed record is pruned while a hand-made record in the zone is untouched.

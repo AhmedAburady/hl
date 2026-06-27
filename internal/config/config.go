@@ -21,25 +21,20 @@ type Remote struct {
 }
 
 type Caddy struct {
-	LocalFile    string `mapstructure:"local_file"`
-	Remote       Remote `mapstructure:"remote"`
-	TargetScheme string `mapstructure:"target_scheme"`
-	CnameTarget  string `mapstructure:"cname_target"`
-	AValue       string `mapstructure:"a_value"`
-	ManagedTag   string `mapstructure:"managed_tag"`
+	LocalFile  string `mapstructure:"local_file"`
+	Remote     Remote `mapstructure:"remote"`
+	ManagedTag string `mapstructure:"managed_tag"`
 }
 
 type Technitium struct {
-	URL         string `mapstructure:"url"`
-	Token       string `mapstructure:"token"`
-	DefaultZone string `mapstructure:"default_zone"`
+	URL   string `mapstructure:"url"`
+	Token string `mapstructure:"token"`
 }
 
 type Config struct {
 	Technitium Technitium `mapstructure:"technitium"`
 	Caddy      Caddy      `mapstructure:"caddy"`
 
-	v    *viper.Viper
 	path string
 }
 
@@ -60,9 +55,7 @@ func DefaultPath() string {
 
 func setDefaults(v *viper.Viper) {
 	v.SetDefault("technitium.url", "http://localhost:5380")
-	v.SetDefault("technitium.default_zone", "")
 	v.SetDefault("caddy.local_file", "Caddyfile")
-	v.SetDefault("caddy.target_scheme", "http")
 	v.SetDefault("caddy.managed_tag", "managed-by:hl")
 	v.SetDefault("caddy.remote.port", 22)
 	v.SetDefault("caddy.remote.remote_path", "/etc/caddy/Caddyfile")
@@ -92,7 +85,7 @@ func Load(path string) (*Config, error) {
 			return nil, fmt.Errorf("read config %s: %w", path, err)
 		}
 	}
-	c := &Config{v: v, path: path}
+	c := &Config{path: path}
 	if err := v.Unmarshal(c); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
@@ -100,20 +93,6 @@ func Load(path string) (*Config, error) {
 }
 
 func (c *Config) Path() string { return c.path }
-
-// SetToken persists the Technitium session token to the config file.
-func (c *Config) SetToken(token string) error {
-	c.Technitium.Token = token
-	c.v.Set("technitium.token", token)
-	return c.write()
-}
-
-func (c *Config) write() error {
-	if err := os.MkdirAll(filepath.Dir(c.path), 0o700); err != nil {
-		return err
-	}
-	return c.v.WriteConfigAs(c.path)
-}
 
 // Init writes a default config file at path, failing if one already exists.
 func Init(path string) (string, error) {

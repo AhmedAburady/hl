@@ -11,9 +11,9 @@ Key facts:
 - Build the runnable binary as `hl`: `go build -o hl .`. Compile-all: `go build ./...`.
 - Verify before finishing: `go vet ./...` and `go test ./...`. Modernize with `go fix ./...` (safe, analysis-based).
 - Entry point is `main.go` → `cmd.Root()` → `fang.Execute` (Charm Fang on top of Cobra). All commands are `newXxxCmd()` factories in `cmd/` registered in `cmd/root.go`.
-- Domain logic is in `internal/`: `config` (Viper), `caddy` (Caddyfile parser, DNS annotations, SSH/SFTP deploy), `technitium` (HTTP API client), `reconcile` (desired-state derivation + diff/apply — the heart of sync), `sshx` (SSH dial/run/push), `prompt` (Huh forms).
+- Domain logic is in `internal/`: `config` (Viper + `ResolveSecret` for token), `caddy` (Caddyfile parser, DNS annotations, SSH/SFTP deploy), `technitium` (HTTP API client), `reconcile` (desired-state derivation + diff/apply — the heart of sync), `sshx` (SSH dial/run/push).
 - DNS reconcile is ownership-scoped: records `hl` creates carry the `caddy.managed_tag` comment (default `managed-by:hl`); only tagged records are ever updated or pruned. Never widen this to untagged records.
-- Config lives at `~/.config/hl/config.yaml` (or `$XDG_CONFIG_HOME/hl/config.yaml` if set); env override prefix is `HLDNS_` (dots → underscores). Token is set by `hl dns login` (which passes an optional `--totp` for 2FA accounts and mints a non-expiring token) and persisted via `config.SetToken`.
+- Config lives at `~/.config/hl/config.yaml` (or `$XDG_CONFIG_HOME/hl/config.yaml` if set); env override prefix is `HLDNS_` (dots → underscores). The Technitium API token is created once in the web UI and stored in `technitium.token`; `config.ResolveSecret` resolves it at use time (literal, `${ENV}`, or an `op://` 1Password reference via `op read`). There is no login command.
 
 ## Task
 
@@ -22,8 +22,8 @@ of the `internal/` packages. Prefer reusing the existing helpers
 (`caddy.UpsertReverseProxy`, `caddy.UpsertDNSAnnotation`, `caddy.ParseSites`,
 `caddy.Deploy`, `reconcile.DeriveDesired`/`BuildPlan`/`Apply`,
 `technitium.Client.AddRecord`/`DeleteRecord`, the shared `runSync`/`reconcileDNS`
-in `cmd/sync.go`, `sshx.Run`/`sshx.PushFile`) over reimplementing them. Keep the
-CLI flags-driven with Huh prompts only as a fallback for missing required values.
+in `cmd/sync.go`, `sshx.Run`/`sshx.PushFile`) over reimplementing them. The CLI is
+flags-driven and non-interactive.
 
 ## Requirements
 
@@ -70,8 +70,8 @@ CLI flags-driven with Huh prompts only as a fallback for missing required values
   `ssh.InsecureIgnoreHostKey`.
 - Do not rename the invoked command away from `hl` or the module path
   `github.com/AhmedAburady/hl` unless the user explicitly asks.
-- Do not add Bubble Tea / full-TUI behavior; this tool is command-driven. Huh
-  prompts are only for missing required inputs.
+- Do not add Bubble Tea / full-TUI behavior or interactive prompts; this tool is
+  flags-driven and non-interactive.
 - Do not widen scope to the Caddy Admin API; this tool edits a local Caddyfile
   and deploys over SSH by design.
 
@@ -84,8 +84,7 @@ Expected approach:
 1. Add the key to `annotationKeys` and the parse switch in `internal/caddy/annotation.go`, plus a field on `DNSAnnotation`, and emit it in `formatDNSAnnotation`.
 2. Cover detection + round-trip in `internal/caddy/annotation_test.go`.
 3. Thread it into `reconcile.Resolve`/`Desired` if it affects the record, with a case in `internal/reconcile/reconcile_test.go`.
-4. Surface a matching flag on `hl add` if it should be authorable from the CLI.
-5. Run `go build ./...`, `go vet ./...`, `go test ./...`. Fix all failures.
+4. Run `go build ./...`, `go vet ./...`, `go test ./...`. Fix all failures.
 
 ## Reference
 
@@ -94,8 +93,8 @@ Expected approach:
 - Config schema and env vars: see `internal/config/config.go` (`setDefaults`,
   `Remote`/`Caddy`/`Technitium` structs) — the canonical source for field names.
 - Technitium API: `internal/technitium/client.go` (AddRecord → `/api/zones/records/add`,
-  DeleteRecord → `/api/zones/records/delete`, CreateToken → `/api/user/createToken`,
-  ListRecords → `/api/zones/records/get`).
+  DeleteRecord → `/api/zones/records/delete`, ListRecords → `/api/zones/records/get`,
+  ListZones → `/api/zones/list`). Auth is a UI-created API token (Bearer); no login.
 - DNS reconcile: `internal/reconcile/reconcile.go` (`DeriveDesired`, `Resolve`,
   `BuildPlan`, `Plan.Apply`); CLI glue in `cmd/sync.go` (`runSync`, `reconcileDNS`).
 - SSH/SFTP: `internal/sshx/sshx.go` (`Run`, `PushFile`, `dial`).

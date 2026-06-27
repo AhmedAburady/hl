@@ -12,7 +12,6 @@ import (
 	"strings"
 
 	"github.com/AhmedAburady/hl/internal/caddy"
-	"github.com/AhmedAburady/hl/internal/config"
 	"github.com/AhmedAburady/hl/internal/technitium"
 )
 
@@ -25,17 +24,16 @@ type Desired struct {
 	TTL    int
 }
 
-// DeriveDesired turns annotated sites into desired records, resolving type,
-// zone, and value from annotations with config defaults. Sites without a DNS
+// DeriveDesired turns annotated sites into desired records. Sites without a DNS
 // directive are skipped. A site whose directive cannot be fully resolved is an
 // error.
-func DeriveDesired(sites []caddy.Site, cfg config.Config) ([]Desired, error) {
+func DeriveDesired(sites []caddy.Site) ([]Desired, error) {
 	var out []Desired
 	for _, s := range sites {
 		if !s.DNS.Present {
 			continue
 		}
-		d, err := Resolve(s.DNS, cfg)
+		d, err := Resolve(s.DNS)
 		if err != nil {
 			return nil, fmt.Errorf("site %s: %w", s.Host, err)
 		}
@@ -44,58 +42,33 @@ func DeriveDesired(sites []caddy.Site, cfg config.Config) ([]Desired, error) {
 	return out, nil
 }
 
-// ResolveMeta resolves the record's type and zone from an annotation and config
-// defaults, without requiring a value. `hl add` uses it to write an explicit,
-// self-describing annotation while still letting the value default at sync time.
-func ResolveMeta(a caddy.DNSAnnotation, cfg config.Config) (technitium.RecordType, string, error) {
-	zone := a.Zone
-	if zone == "" {
-		zone = cfg.Technitium.DefaultZone
+// Resolve turns a single DNS annotation into a desired record. The Caddyfile is
+// the sole source of truth: zone and value must be declared in the directive
+// (there are no config defaults). Type is taken from type= or inferred from the
+// value (IPv4 => A, else CNAME).
+func Resolve(a caddy.DNSAnnotation) (Desired, error) {
+	if a.Zone == "" {
+		return Desired{}, fmt.Errorf("no zone: set zone= in the directive")
 	}
-	if zone == "" {
-		return "", "", fmt.Errorf("no zone: set zone= in the directive or technitium.default_zone")
+	if a.Value == "" {
+		return Desired{}, fmt.Errorf("no value: set value= in the directive")
 	}
-	typ, err := resolveType(a, cfg)
-	if err != nil {
-		return "", "", err
-	}
-	return typ, zone, nil
-}
-
-// Resolve turns a single DNS annotation into a desired record, applying config
-// defaults for zone, type, and value.
-func Resolve(a caddy.DNSAnnotation, cfg config.Config) (Desired, error) {
-	typ, zone, err := ResolveMeta(a, cfg)
+	typ, err := resolveType(a)
 	if err != nil {
 		return Desired{}, err
 	}
-
-	value := a.Value
-	if value == "" {
-		switch typ {
-		case technitium.TypeA:
-			value = cfg.Caddy.AValue
-		case technitium.TypeCNAME:
-			value = cfg.Caddy.CnameTarget
-		}
-	}
-	if value == "" {
-		return Desired{}, fmt.Errorf("no value: set value= in the directive or caddy.%s", defaultKey(typ))
-	}
-
 	return Desired{
-		Domain: fqdn(a.Name, zone),
-		Zone:   zone,
+		Domain: fqdn(a.Name, a.Zone),
+		Zone:   a.Zone,
 		Type:   typ,
-		Value:  value,
+		Value:  a.Value,
 		TTL:    a.TTL,
 	}, nil
 }
 
-// resolveType determines the record type: explicit annotation wins; else infer
-// from an explicit value (IPv4 => A); else fall back to whichever config default
-// is configured (preferring CNAME, matching the historical default).
-func resolveType(a caddy.DNSAnnotation, cfg config.Config) (technitium.RecordType, error) {
+// resolveType determines the record type: explicit type= wins; otherwise it is
+// inferred from the value (IPv4 => A, else CNAME).
+func resolveType(a caddy.DNSAnnotation) (technitium.RecordType, error) {
 	if a.Type != "" {
 		switch technitium.RecordType(a.Type) {
 		case technitium.TypeA, technitium.TypeCNAME:
@@ -104,26 +77,15 @@ func resolveType(a caddy.DNSAnnotation, cfg config.Config) (technitium.RecordTyp
 			return "", fmt.Errorf("unsupported type %q (want A or CNAME)", a.Type)
 		}
 	}
-	if a.Value != "" {
-		if isIPv4(a.Value) {
-			return technitium.TypeA, nil
-		}
-		return technitium.TypeCNAME, nil
-	}
-	if cfg.Caddy.CnameTarget != "" {
-		return technitium.TypeCNAME, nil
-	}
-	if cfg.Caddy.AValue != "" {
+	if isIPv4(a.Value) {
 		return technitium.TypeA, nil
 	}
-	return "", fmt.Errorf("cannot determine record type: set type= or a config default")
-}
-
-func defaultKey(t technitium.RecordType) string {
-	if t == technitium.TypeA {
-		return "a_value"
+	// A non-IPv4 value that still parses as an IP is IPv6 (AAAA), which this tool
+	// does not support; fail fast rather than send it as a bogus CNAME target.
+	if net.ParseIP(a.Value) != nil {
+		return "", fmt.Errorf("value %q is an IPv6 address (AAAA records are not supported); use type=A/CNAME", a.Value)
 	}
-	return "cname_target"
+	return technitium.TypeCNAME, nil
 }
 
 func fqdn(name, zone string) string {
