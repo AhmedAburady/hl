@@ -133,7 +133,7 @@ func newDNSLoginCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&user, "user", "", "Technitium admin user")
 	cmd.Flags().StringVar(&pass, "pass", "", "Technitium admin password")
-	cmd.Flags().StringVar(&totp, "totp", "", "2FA code, if the account has 2FA enabled")
+	cmd.Flags().StringVar(&totp, "totp", "", "2FA code; required if the account has 2FA enabled (prompted only when --user/--pass are omitted)")
 	cmd.Flags().StringVar(&name, "token-name", "", "name for the created token (default hl)")
 	return cmd
 }

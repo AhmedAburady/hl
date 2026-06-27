@@ -54,7 +54,9 @@ hl config init
 
 # 3. Create and save a Technitium API token
 hl dns login
-#    Prompts for your Technitium admin user + password, saves the token.
+#    Prompts for your Technitium admin user + password (and a 2FA code if
+#    your account has 2FA enabled), then saves a non-expiring token.
+#    Non-interactive: hl dns login --user admin --pass 'secret' --totp 123456
 
 # 4. Check the effective config (token is redacted)
 hl config show
@@ -157,6 +159,11 @@ hl add app.home.lab 192.168.1.50:8080 --no-dns
 
 `hl dns add` flags: `--type` (A/CNAME), `--value`, `--zone`, `--ttl`,
 `--overwrite`, `--comments`.
+
+`hl dns login` flags: `--user`, `--pass`, `--totp` (2FA code, only if the
+account has 2FA enabled), `--token-name` (label for the token in Technitium's
+Administration → Sessions list, default `hl`). The token is non-expiring, so
+a 2FA code is needed only once at login.
 
 ## Safety
 

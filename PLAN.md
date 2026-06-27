@@ -135,7 +135,7 @@ caddy:
   sftp push, run `reload_cmd`; on failure restore backup and return remote output.
 
 ### 5.5 `internal/prompt`
-- `huh` forms: missing `host`/`target` for `add`; `user`/`pass` for `dns login`.
+- `huh` forms: missing `host`/`target` for `add`; `user`/`pass`/`totp` for `dns login`.
 
 ---
 
@@ -154,7 +154,7 @@ caddy:
 - **`caddy list`** — list configured hosts from local Caddyfile.
 - **`dns add <domain>`** — add one A/CNAME record (`--type`,`--value`,`--zone`,`--ttl`,`--overwrite`).
 - **`dns list`** — list records in `--zone`.
-- **`dns login`** — `createToken`, save to config (`--user`,`--pass` or prompt).
+- **`dns login`** — `createToken`, save non-expiring token to config (`--user`,`--pass`,`--totp`,`--token-name` or prompt; `--totp` only if 2FA enabled).
 - **`config init|show`** — scaffold / print effective config (token redacted).
 
 ---

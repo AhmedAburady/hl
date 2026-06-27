@@ -10,7 +10,7 @@ Key facts:
 - Verify before finishing: `go vet ./...` and `go test ./...`. Modernize with `go fix ./...` (safe, analysis-based).
 - Entry point is `main.go` → `cmd.Root()` → `fang.Execute` (Charm Fang on top of Cobra). All commands are `newXxxCmd()` factories in `cmd/` registered in `cmd/root.go`.
 - Domain logic is in `internal/`: `config` (Viper), `caddy` (Caddyfile parser + SSH/SFTP deploy), `technitium` (HTTP API client), `sshx` (SSH dial/run/push), `prompt` (Huh forms).
-- Config lives at `~/.config/hl/config.yaml` (or `$XDG_CONFIG_HOME/hl/config.yaml` if set); env override prefix is `HLDNS_` (dots → underscores). Token is set by `hl dns login` and persisted via `config.SetToken`.
+- Config lives at `~/.config/hl/config.yaml` (or `$XDG_CONFIG_HOME/hl/config.yaml` if set); env override prefix is `HLDNS_` (dots → underscores). Token is set by `hl dns login` (which passes an optional `--totp` for 2FA accounts and mints a non-expiring token) and persisted via `config.SetToken`.
 
 ## Task
 

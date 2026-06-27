@@ -130,6 +130,25 @@ func TestCreateToken_ParsesToken(t *testing.T) {
 	}
 }
 
+func TestCreateToken_OmitsEmptyTOTP(t *testing.T) {
+	c, _ := startServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := r.URL.Query()["totp"]; ok {
+			t.Errorf("totp param should be absent for non-2FA login, got %v", r.URL.Query())
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":   "ok",
+			"response": map[string]any{"token": "abc123"},
+		})
+	})
+	tok, err := c.CreateToken(context.Background(), "admin", "secret", "", "cli")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tok != "abc123" {
+		t.Fatalf("got token %q want abc123", tok)
+	}
+}
+
 func TestListRecords_Decodes(t *testing.T) {
 	c, _ := startServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/zones/records/get" {
