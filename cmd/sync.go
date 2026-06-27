@@ -89,12 +89,22 @@ func reconcileDNS(c *cobra.Command, cfg *config.Config, content string, dryRun, 
 	if err != nil {
 		return err
 	}
-	// With no annotations and no token, there is nothing to manage — don't force
-	// the user to configure a token. But if a token IS set, still reconcile so
-	// that removing the last annotation prunes the records it previously created.
-	if len(desired) == 0 && cfg.Technitium.Token == "" {
-		out(c, "DNS: no managed records declared in %s", cfg.Caddy.LocalFile)
-		return nil
+	if len(desired) == 0 {
+		// Never prune from an empty or missing Caddyfile: with no site blocks at
+		// all this is almost certainly a misconfiguration, and reconciling would
+		// delete every managed record. Removing annotations from a file that still
+		// has site blocks IS a legitimate "drop these records" signal, so that
+		// case (sites present, token set) falls through to reconcile below.
+		if strings.TrimSpace(content) == "" || len(sites) == 0 {
+			out(c, "DNS: no site blocks in %s; skipping reconcile (not pruning)", cfg.Caddy.LocalFile)
+			return nil
+		}
+		// No annotations and no token: nothing to manage, and we won't force the
+		// user to configure a token just to be told there is nothing to do.
+		if cfg.Technitium.Token == "" {
+			out(c, "DNS: no managed records declared in %s", cfg.Caddy.LocalFile)
+			return nil
+		}
 	}
 	cl, err := technitiumClient(c, cfg)
 	if err != nil {

@@ -58,7 +58,7 @@ caddy/                      module root
     root.go                 root cmd, --config, version, wiring
     sync.go                 sync (deploy + DNS reconcile); shared runSync/reconcileDNS
     status.go               read-only: hosts + pending DNS plan
-    dns.go                  dns list | login
+    dns.go                  dns list
     config.go               config init | show
   internal/
     config/config.go        viper struct + load/init
@@ -83,13 +83,14 @@ technitium:
   url: http://dns.home:5380
   token: ""              # API token from Technitium UI; literal | ${ENV} | op://...
 caddy:
-  local_file: /Users/ahmabora1/HomeLab/caddy/Caddyfile   # source of truth
+  local_file: ~/.config/hl/Caddyfile   # source of truth (~ is expanded)
   managed_tag: managed-by:hl                             # DNS ownership tag
   remote:
     host: caddy.home
     user: root
     port: 22
     key: ~/.ssh/id_ed25519        # empty => try ssh-agent
+    agent_socket: ""              # explicit ssh-agent socket; empty => $SSH_AUTH_SOCK
     remote_path: /etc/caddy/Caddyfile
     reload_cmd: "caddy reload --config /etc/caddy/Caddyfile"
 ```
@@ -103,12 +104,15 @@ caddy:
   `errors.AsType[*fs.PathError]`.
 - `ResolveSecret(ctx, s)` — token resolution at use time: `op://...` via
   `op read`, `${ENV}` via `os.Expand`, else literal.
-- `Init(path)` — `SafeWriteConfigAs` default file (fails if exists).
+- `InitValues`/`DefaultInitValues`/`Render`/`Write`/`Exists` — back `hl config init`:
+  render a complete config from gathered values; `Render` output is itself
+  loadable (round-trip tested). The interactive prompting lives in `cmd`.
 
 ### 5.2 `internal/sshx`
-- `Target{Host,User,Port,KeyPath}`.
+- `Target{Host,User,Port,KeyPath,AgentSocket}`.
 - `dial(ctx, t)` — `net.Dialer.DialContext` → `ssh.NewClientConn`.
-  Auth: private key if present, plus ssh-agent (`SSH_AUTH_SOCK`).
+  Auth: private key if present, plus ssh-agent at `AgentSocket`
+  (falling back to `$SSH_AUTH_SOCK` when empty).
   Host keys: verify against `~/.ssh/known_hosts`; unknown host =>
   TOFU accept with `slog.Warn`; **mismatch => reject** (detected via
   `errors.AsType[*knownhosts.KeyError]` + non-empty `Want`).
@@ -165,7 +169,9 @@ caddy:
 - **`status`** — read-only: list hosts from the local file + print the pending
   DNS plan (`sync --dry-run` that never deploys). Flag: `--no-prune`.
 - **`dns list`** — list records in `--zone` (required).
-- **`config init|show`** — scaffold / print effective config (token redacted).
+- **`config init`** — interactive onboarding wizard on a TTY (URL, token, Caddy
+  host, SSH auth, paths), asking before overwriting; writes a complete template
+  when non-interactive. **`config show`** — print effective config (token redacted).
 
 Auth: the Technitium API token is created once in the web UI and stored in
 `technitium.token` (literal, `${ENV}`, or `op://` reference). There is no login

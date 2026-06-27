@@ -125,7 +125,7 @@ func TestBuildPlan_UpdateOnValueDrift(t *testing.T) {
 }
 
 func TestBuildPlan_DeletesOnlyManagedOrphans(t *testing.T) {
-	d := []Desired{} // nothing desired
+	d := []Desired{}
 	actual := []technitium.Record{
 		rec("managed.home.lab", "A", "1.1.1.1", tag),
 		rec("manual.home.lab", "A", "9.9.9.9", ""), // not tagged => must be left alone

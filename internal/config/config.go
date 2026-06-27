@@ -12,12 +12,13 @@ import (
 )
 
 type Remote struct {
-	Host       string `mapstructure:"host"`
-	User       string `mapstructure:"user"`
-	Port       int    `mapstructure:"port"`
-	Key        string `mapstructure:"key"`
-	RemotePath string `mapstructure:"remote_path"`
-	ReloadCmd  string `mapstructure:"reload_cmd"`
+	Host        string `mapstructure:"host"`
+	User        string `mapstructure:"user"`
+	Port        int    `mapstructure:"port"`
+	Key         string `mapstructure:"key"`
+	AgentSocket string `mapstructure:"agent_socket"`
+	RemotePath  string `mapstructure:"remote_path"`
+	ReloadCmd   string `mapstructure:"reload_cmd"`
 }
 
 type Caddy struct {
@@ -53,9 +54,23 @@ func DefaultPath() string {
 	return filepath.Join(dir, "hl", "config.yaml")
 }
 
+// DefaultLocalFile returns the default Caddyfile path: a "Caddyfile" sitting
+// next to the config file (e.g. ~/.config/hl/Caddyfile), expressed with a
+// leading ~ when it lives under the home directory so it reads cleanly and
+// stays portable across machines.
+func DefaultLocalFile() string {
+	dir := filepath.Dir(DefaultPath())
+	if home, err := os.UserHomeDir(); err == nil {
+		if rel, err := filepath.Rel(home, dir); err == nil && !strings.HasPrefix(rel, "..") {
+			return filepath.Join("~", rel, "Caddyfile")
+		}
+	}
+	return filepath.Join(dir, "Caddyfile")
+}
+
 func setDefaults(v *viper.Viper) {
 	v.SetDefault("technitium.url", "http://localhost:5380")
-	v.SetDefault("caddy.local_file", "Caddyfile")
+	v.SetDefault("caddy.local_file", DefaultLocalFile())
 	v.SetDefault("caddy.managed_tag", "managed-by:hl")
 	v.SetDefault("caddy.remote.port", 22)
 	v.SetDefault("caddy.remote.remote_path", "/etc/caddy/Caddyfile")
@@ -81,7 +96,9 @@ func Load(path string) (*Config, error) {
 	}
 	v := newViper(path)
 	if err := v.ReadInConfig(); err != nil {
-		if _, ok := errors.AsType[*fs.PathError](err); !ok {
+		// A missing file is fine (defaults + env apply); anything else — including
+		// a permission-denied on an existing file — is a real error.
+		if !errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("read config %s: %w", path, err)
 		}
 	}
@@ -93,18 +110,3 @@ func Load(path string) (*Config, error) {
 }
 
 func (c *Config) Path() string { return c.path }
-
-// Init writes a default config file at path, failing if one already exists.
-func Init(path string) (string, error) {
-	if path == "" {
-		path = DefaultPath()
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return "", err
-	}
-	v := newViper(path)
-	if err := v.SafeWriteConfigAs(path); err != nil {
-		return "", err
-	}
-	return path, nil
-}

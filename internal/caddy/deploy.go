@@ -5,16 +5,28 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/AhmedAburady/hl/internal/config"
 	"github.com/AhmedAburady/hl/internal/sshx"
 )
 
+// expandTilde resolves a leading ~ to the user's home directory so config
+// paths like ~/.config/hl/Caddyfile work with os file operations.
+func expandTilde(path string) string {
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, path[1:])
+		}
+	}
+	return path
+}
+
 // ReadLocalFile reads the local Caddyfile, returning an empty string if it
 // does not yet exist.
 func ReadLocalFile(path string) (string, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(expandTilde(path))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", nil
@@ -27,6 +39,7 @@ func ReadLocalFile(path string) (string, error) {
 // WriteLocalFile writes content to the local Caddyfile after making a
 // timestamped backup of the existing file.
 func WriteLocalFile(path, content string) error {
+	path = expandTilde(path)
 	if existing, err := os.ReadFile(path); err == nil && len(existing) > 0 {
 		bak := path + "." + time.Now().Format("20060102-150405") + ".bak"
 		if err := os.WriteFile(bak, existing, 0o600); err != nil {
@@ -46,37 +59,35 @@ func Deploy(ctx context.Context, cfg config.Caddy) (string, error) {
 	if remote.Host == "" {
 		return "", fmt.Errorf("caddy.remote.host is not configured")
 	}
-	t := sshx.Target{Host: remote.Host, User: remote.User, Port: remote.Port, KeyPath: remote.Key}
+	t := sshx.Target{Host: remote.Host, User: remote.User, Port: remote.Port, KeyPath: remote.Key, AgentSocket: remote.AgentSocket}
 	if t.User == "" {
 		t.User = "root"
 	}
 
-	// 1. Back up the current remote file.
 	backup := remote.RemotePath + ".hldns.bak"
 	backupCmd := fmt.Sprintf("cp -f %s %s 2>/dev/null || true", shellQuote(remote.RemotePath), shellQuote(backup))
 	if _, err := sshx.Run(ctx, t, backupCmd); err != nil {
 		return "", fmt.Errorf("remote backup: %w", err)
 	}
 
-	// 2. Push the new file.
-	if err := sshx.PushFile(ctx, t, cfg.LocalFile, remote.RemotePath); err != nil {
+	if err := sshx.PushFile(ctx, t, expandTilde(cfg.LocalFile), remote.RemotePath); err != nil {
 		return "", fmt.Errorf("push: %w", err)
 	}
 
-	// 3. Reload.
 	reload := remote.ReloadCmd
 	if reload == "" {
 		reload = "caddy reload --config " + shellQuote(remote.RemotePath)
 	}
 	out, err := sshx.Run(ctx, t, reload)
 	if err != nil {
-		// 4. Restore on failure.
 		_, _ = sshx.Run(ctx, t, fmt.Sprintf("mv -f %s %s", shellQuote(backup), shellQuote(remote.RemotePath)))
 		return out, fmt.Errorf("reload failed (restored previous config): %w", err)
 	}
 	return out, nil
 }
 
+// shellQuote single-quotes s for safe use in a remote shell command, escaping
+// any embedded single quotes (the '\” idiom) so a value cannot break out.
 func shellQuote(s string) string {
-	return "'" + string([]byte(s)) + "'"
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

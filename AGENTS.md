@@ -23,7 +23,9 @@ of the `internal/` packages. Prefer reusing the existing helpers
 `caddy.Deploy`, `reconcile.DeriveDesired`/`BuildPlan`/`Apply`,
 `technitium.Client.AddRecord`/`DeleteRecord`, the shared `runSync`/`reconcileDNS`
 in `cmd/sync.go`, `sshx.Run`/`sshx.PushFile`) over reimplementing them. The CLI is
-flags-driven and non-interactive.
+flags-driven and non-interactive, except `hl config init`, which runs an onboarding
+wizard over stdin when attached to a TTY (`term.IsTerminal`) and writes a complete
+template otherwise.
 
 ## Requirements
 
@@ -70,8 +72,8 @@ flags-driven and non-interactive.
   `ssh.InsecureIgnoreHostKey`.
 - Do not rename the invoked command away from `hl` or the module path
   `github.com/AhmedAburady/hl` unless the user explicitly asks.
-- Do not add Bubble Tea / full-TUI behavior or interactive prompts; this tool is
-  flags-driven and non-interactive.
+- Do not add Bubble Tea / full-TUI behavior; the tool is flags-driven. The only
+  interactive surface is `hl config init`'s stdin onboarding wizard (TTY-gated).
 - Do not widen scope to the Caddy Admin API; this tool edits a local Caddyfile
   and deploys over SSH by design.
 

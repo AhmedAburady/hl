@@ -18,10 +18,11 @@ import (
 )
 
 type Target struct {
-	Host    string
-	User    string
-	Port    int
-	KeyPath string
+	Host        string
+	User        string
+	Port        int
+	KeyPath     string
+	AgentSocket string // explicit ssh-agent socket; empty falls back to $SSH_AUTH_SOCK
 }
 
 func (t Target) addr() string {
@@ -44,29 +45,48 @@ func expand(path string) string {
 	return path
 }
 
-func authMethods(keyPath string) ([]ssh.AuthMethod, error) {
+// authMethods builds the SSH auth methods and a cleanup func the caller must
+// invoke once the handshake is done (it closes the ssh-agent connection, if any,
+// which must stay open through authentication).
+func authMethods(keyPath, agentSocket string) ([]ssh.AuthMethod, func(), error) {
 	var methods []ssh.AuthMethod
+	cleanup := func() {}
 	if keyPath != "" {
 		data, err := os.ReadFile(expand(keyPath))
 		if err != nil {
-			return nil, fmt.Errorf("read key %s: %w", keyPath, err)
+			return nil, nil, fmt.Errorf("read key %s: %w", keyPath, err)
 		}
 		signer, err := ssh.ParsePrivateKey(data)
 		if err != nil {
-			return nil, fmt.Errorf("parse key %s: %w", keyPath, err)
+			return nil, nil, fmt.Errorf("parse key %s: %w", keyPath, err)
 		}
 		methods = append(methods, ssh.PublicKeys(signer))
 	}
-	if sock := os.Getenv("SSH_AUTH_SOCK"); sock != "" {
-		if conn, err := net.Dial("unix", sock); err == nil {
-			ag := agent.NewClient(conn)
-			methods = append(methods, ssh.PublicKeysCallback(ag.Signers))
+
+	// Try the configured socket first, then fall back to $SSH_AUTH_SOCK if the
+	// configured one is unset or cannot be reached.
+	var sockets []string
+	if s := expand(agentSocket); s != "" {
+		sockets = append(sockets, s)
+	}
+	if env := os.Getenv("SSH_AUTH_SOCK"); env != "" {
+		sockets = append(sockets, env)
+	}
+	for _, sock := range sockets {
+		conn, err := net.Dial("unix", sock)
+		if err != nil {
+			continue
 		}
+		ag := agent.NewClient(conn)
+		methods = append(methods, ssh.PublicKeysCallback(ag.Signers))
+		cleanup = func() { _ = conn.Close() }
+		break
 	}
+
 	if len(methods) == 0 {
-		return nil, errors.New("no SSH auth methods: set caddy.remote.key or run ssh-agent")
+		return nil, nil, errors.New("no SSH auth methods: set caddy.remote.key, caddy.remote.agent_socket, or run ssh-agent")
 	}
-	return methods, nil
+	return methods, cleanup, nil
 }
 
 func hostKeyCallback() ssh.HostKeyCallback {
@@ -93,10 +113,11 @@ func hostKeyCallback() ssh.HostKeyCallback {
 }
 
 func dial(ctx context.Context, t Target) (*ssh.Client, error) {
-	methods, err := authMethods(t.KeyPath)
+	methods, cleanup, err := authMethods(t.KeyPath, t.AgentSocket)
 	if err != nil {
 		return nil, err
 	}
+	defer cleanup()
 	cfg := &ssh.ClientConfig{
 		User:            t.User,
 		Auth:            methods,

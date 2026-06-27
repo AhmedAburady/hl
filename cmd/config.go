@@ -1,11 +1,14 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
-	"strings"
+	"os"
 
 	"github.com/AhmedAburady/hl/internal/config"
+	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 func newConfigCmd() *cobra.Command {
@@ -18,20 +21,123 @@ func newConfigCmd() *cobra.Command {
 }
 
 func newConfigInitCmd() *cobra.Command {
+	var force bool
 	cmd := &cobra.Command{
 		Use:   "init",
-		Short: "Write a default config file (fails if one already exists)",
+		Short: "Create the config file, interactively when possible",
 		RunE: func(c *cobra.Command, _ []string) error {
-			path, err := config.Init(configPath)
-			if err != nil {
-				return fmt.Errorf("init config: %w", err)
+			path := configPath
+			if path == "" {
+				path = config.DefaultPath()
 			}
-			out(c, "Wrote default config to %s", path)
-			out(c, "Edit it with your Technitium URL + API token (from the Technitium UI) and Caddy SSH details.")
+
+			if !isInteractive() {
+				if config.Exists(path) && !force {
+					return fmt.Errorf("config already exists at %s (use --force to overwrite)", path)
+				}
+				if err := config.Write(path, config.Render(config.DefaultInitValues())); err != nil {
+					return fmt.Errorf("write config: %w", err)
+				}
+				out(c, "Wrote config template to %s; edit technitium.token and caddy.remote.host.", path)
+				return nil
+			}
+
+			if config.Exists(path) && !force {
+				overwrite, err := confirm(fmt.Sprintf("Config already exists at %s.\nOverwrite it?", path))
+				if err != nil {
+					return err
+				}
+				if !overwrite {
+					out(c, "Aborted; existing config left unchanged.")
+					return nil
+				}
+			}
+
+			vals := config.DefaultInitValues()
+			if err := runInitWizard(&vals); err != nil {
+				if errors.Is(err, huh.ErrUserAborted) {
+					out(c, "Aborted.")
+					return nil
+				}
+				return err
+			}
+			if err := config.Write(path, config.Render(vals)); err != nil {
+				return fmt.Errorf("write config: %w", err)
+			}
+			out(c, "Wrote config to %s", path)
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&force, "force", false, "overwrite an existing config without prompting")
 	return cmd
+}
+
+// runInitWizard runs a styled form for the essential settings, mutating vals.
+func runInitWizard(vals *config.InitValues) error {
+	useAgent := vals.SSHKey == ""
+	// Prefill the key path only; the agent socket stays empty so it resolves
+	// $SSH_AUTH_SOCK at run time (the per-session launchd socket must not be saved).
+	if vals.SSHKey == "" {
+		vals.SSHKey = "~/.ssh/id_ed25519"
+	}
+
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewNote().Title("hl setup").Description("Technitium DNS + Caddy reverse-proxy details."),
+			huh.NewInput().Title("Technitium DNS server URL").Value(&vals.URL),
+			huh.NewInput().Title("Technitium API token").
+				Description("From the Technitium UI. Literal, ${ENV_VAR}, or op://vault/item/field.").
+				EchoMode(huh.EchoModePassword).
+				Value(&vals.Token),
+		),
+		huh.NewGroup(
+			huh.NewInput().Title("Caddy server host (SSH)").Placeholder("192.168.1.20").Value(&vals.RemoteHost),
+			huh.NewInput().Title("SSH user").Value(&vals.RemoteUser),
+			// Two side-by-side pills: [ ssh-agent ] [ ssh key ].
+			huh.NewConfirm().Title("SSH authentication").
+				Affirmative("ssh-agent").Negative("ssh key").Value(&useAgent),
+		),
+		// One of the next two groups shows, based on the toggle above.
+		huh.NewGroup(
+			huh.NewInput().Title("ssh-agent socket").
+				Description("Leave empty to use $SSH_AUTH_SOCK. Set a stable path only for a custom agent (e.g. 1Password).").
+				Placeholder(config.SuggestedAgentSocket()).
+				Value(&vals.AgentSocket),
+		).WithHideFunc(func() bool { return !useAgent }),
+		huh.NewGroup(
+			huh.NewInput().Title("SSH private key path").Value(&vals.SSHKey),
+		).WithHideFunc(func() bool { return useAgent }),
+		huh.NewGroup(
+			huh.NewInput().Title("Local Caddyfile path").Value(&vals.LocalFile),
+			huh.NewInput().Title("Remote Caddyfile path").Value(&vals.RemotePath),
+		),
+	)
+	if err := form.Run(); err != nil {
+		return err
+	}
+	if useAgent {
+		vals.SSHKey = ""
+	} else {
+		vals.AgentSocket = ""
+	}
+	return nil
+}
+
+// confirm shows a styled yes/no prompt defaulting to no.
+func confirm(title string) (bool, error) {
+	var ok bool
+	err := huh.NewForm(huh.NewGroup(
+		huh.NewConfirm().Title(title).Affirmative("Overwrite").Negative("Cancel").Value(&ok),
+	)).Run()
+	if errors.Is(err, huh.ErrUserAborted) {
+		return false, nil
+	}
+	return ok, err
+}
+
+// isInteractive reports whether stdin is a terminal we can prompt on.
+func isInteractive() bool {
+	return term.IsTerminal(int(os.Stdin.Fd()))
 }
 
 func newConfigShowCmd() *cobra.Command {
@@ -56,12 +162,13 @@ func newConfigShowCmd() *cobra.Command {
 			out(c, "  local_file:   %s", cfg.Caddy.LocalFile)
 			out(c, "  managed_tag:  %s", cfg.Caddy.ManagedTag)
 			out(c, "  remote:")
-			out(c, "    host:        %s", cfg.Caddy.Remote.Host)
-			out(c, "    user:        %s", cfg.Caddy.Remote.User)
-			out(c, "    port:        %d", cfg.Caddy.Remote.Port)
-			out(c, "    key:         %s", redactKey(cfg.Caddy.Remote.Key))
-			out(c, "    remote_path: %s", cfg.Caddy.Remote.RemotePath)
-			out(c, "    reload_cmd:  %s", cfg.Caddy.Remote.ReloadCmd)
+			out(c, "    host:         %s", cfg.Caddy.Remote.Host)
+			out(c, "    user:         %s", cfg.Caddy.Remote.User)
+			out(c, "    port:         %d", cfg.Caddy.Remote.Port)
+			out(c, "    key:          %s", redactKey(cfg.Caddy.Remote.Key))
+			out(c, "    agent_socket: %s", agentSocketDisplay(cfg.Caddy.Remote.AgentSocket))
+			out(c, "    remote_path:  %s", cfg.Caddy.Remote.RemotePath)
+			out(c, "    reload_cmd:   %s", cfg.Caddy.Remote.ReloadCmd)
 			return nil
 		},
 	}
@@ -72,8 +179,14 @@ func redactKey(k string) string {
 	if k == "" {
 		return "(ssh-agent)"
 	}
-	if strings.HasPrefix(k, "~") {
-		return k
-	}
 	return k
+}
+
+// agentSocketDisplay shows the configured ssh-agent socket, noting the
+// environment fallback when none is set.
+func agentSocketDisplay(s string) string {
+	if s == "" {
+		return "($SSH_AUTH_SOCK)"
+	}
+	return s
 }

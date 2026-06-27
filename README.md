@@ -59,16 +59,17 @@ hl --help
 ```sh
 # 1. Create the config file
 hl config init
+#    On a terminal this is an interactive wizard (DNS URL, token, Caddy host, SSH
+#    auth, paths) and asks before overwriting an existing file. When stdin is not
+#    a terminal it writes a complete template you can edit by hand; if a config
+#    already exists it errors instead of clobbering (pass --force to overwrite).
+#    Lives at ~/.config/hl/config.yaml (or $XDG_CONFIG_HOME/hl/config.yaml).
 
-# 2. Edit it with your details (path is printed by the command above)
-#    Lives at ~/.config/hl/config.yaml on both macOS and Linux
-#    (or $XDG_CONFIG_HOME/hl/config.yaml if XDG_CONFIG_HOME is set)
+# 2. Create an API token in the Technitium web UI
+#    Administration → Sessions → Create Token. Use it as technitium.token —
+#    a literal, an op://vault/item/field reference, or ${ENV_VAR} (see below).
 
-# 3. Create an API token in the Technitium web UI
-#    Administration → Sessions → Create Token. Copy the token string and put it in
-#    technitium.token in the config (or an op:// / ${ENV} reference — see below).
-
-# 4. Check the effective config (token is redacted)
+# 3. Check the effective config (token is redacted)
 hl config show
 ```
 
@@ -81,13 +82,14 @@ technitium:
                                   # literal, ${ENV_VAR}, or op://vault/item/field
 
 caddy:
-  local_file: /Users/you/HomeLab/caddy/Caddyfile   # source of truth
+  local_file: ~/.config/hl/Caddyfile   # source of truth (~ is expanded)
   managed_tag: managed-by:hl      # ownership tag written to records hl manages
   remote:
     host: caddy.home              # SSH host for the Caddy server
     user: root                    # SSH user (defaults to root)
     port: 22
     key: ~/.ssh/id_ed25519        # private key; leave empty to use ssh-agent
+    agent_socket: ""              # ssh-agent socket; empty falls back to $SSH_AUTH_SOCK
     remote_path: /etc/caddy/Caddyfile
     reload_cmd: "caddy reload --config /etc/caddy/Caddyfile"
 ```
@@ -166,7 +168,7 @@ You edit the Caddyfile directly — add a block, add its annotation — then run
 | `hl sync` | Deploy the Caddyfile and reconcile DNS from annotations |
 | `hl status` | Show hosts + the pending DNS plan (read-only) |
 | `hl dns list` | List records in a zone (`--zone`, required) |
-| `hl config init` | Write a default config file |
+| `hl config init` | Create the config file (interactive wizard on a TTY, template otherwise) |
 | `hl config show` | Print effective config (token redacted) |
 
 ## Safety
