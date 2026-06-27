@@ -115,12 +115,17 @@ func (c *Client) do(ctx context.Context, path string, params url.Values) (*apiRe
 	return &ar, nil
 }
 
-// CreateToken creates a persistent API token for the given user/password. The
-// caller should persist the returned token via config.SetToken.
-func (c *Client) CreateToken(ctx context.Context, user, pass, name string) (string, error) {
+// CreateToken creates a persistent API token for the given user/password. If
+// the account has 2FA enabled, totp must be a current authenticator code;
+// otherwise it may be empty. The caller should persist the returned token via
+// config.SetToken.
+func (c *Client) CreateToken(ctx context.Context, user, pass, totp, name string) (string, error) {
 	params := url.Values{}
 	params.Set("user", user)
 	params.Set("pass", pass)
+	if totp != "" {
+		params.Set("totp", totp)
+	}
 	params.Set("tokenName", name)
 	params.Set("includeInfo", "false")
 

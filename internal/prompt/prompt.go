@@ -52,12 +52,14 @@ func ForAdd(host, target string) (AddArgs, error) {
 type LoginArgs struct {
 	User string
 	Pass string
+	TOTP string
 	Name string
 }
 
-// ForLogin prompts for Technitium admin credentials.
-func ForLogin(user, pass, name string) (LoginArgs, error) {
-	a := LoginArgs{User: user, Pass: pass, Name: name}
+// ForLogin prompts for Technitium admin credentials. The TOTP field is left
+// blank if the account has no 2FA configured.
+func ForLogin(user, pass, totp, name string) (LoginArgs, error) {
+	a := LoginArgs{User: user, Pass: pass, TOTP: totp, Name: name}
 	if name == "" {
 		a.Name = "hl"
 	}
@@ -76,6 +78,7 @@ func ForLogin(user, pass, name string) (LoginArgs, error) {
 				}
 				return nil
 			}),
+		huh.NewInput().Title("2FA code (leave blank if not enabled)").Value(&a.TOTP),
 		huh.NewInput().Title("Token name").Value(&a.Name),
 	))
 	if err := form.Run(); err != nil {

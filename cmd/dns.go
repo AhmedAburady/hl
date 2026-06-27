@@ -101,6 +101,7 @@ func newDNSLoginCmd() *cobra.Command {
 	var (
 		user string
 		pass string
+		totp string
 		name string
 	)
 	cmd := &cobra.Command{
@@ -112,14 +113,14 @@ func newDNSLoginCmd() *cobra.Command {
 				return err
 			}
 			if user == "" || pass == "" {
-				a, err := prompt.ForLogin(user, pass, name)
+				a, err := prompt.ForLogin(user, pass, totp, name)
 				if err != nil {
 					return err
 				}
-				user, pass, name = a.User, a.Pass, a.Name
+				user, pass, totp, name = a.User, a.Pass, a.TOTP, a.Name
 			}
 			cl := technitium.New(cfg.Technitium.URL, "")
-			token, err := cl.CreateToken(c.Context(), user, pass, name)
+			token, err := cl.CreateToken(c.Context(), user, pass, totp, name)
 			if err != nil {
 				return fmt.Errorf("create token: %w", err)
 			}
@@ -132,6 +133,7 @@ func newDNSLoginCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&user, "user", "", "Technitium admin user")
 	cmd.Flags().StringVar(&pass, "pass", "", "Technitium admin password")
+	cmd.Flags().StringVar(&totp, "totp", "", "2FA code, if the account has 2FA enabled")
 	cmd.Flags().StringVar(&name, "token-name", "", "name for the created token (default hl)")
 	return cmd
 }

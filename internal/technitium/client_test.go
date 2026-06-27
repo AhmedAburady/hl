@@ -113,12 +113,15 @@ func TestCreateToken_ParsesToken(t *testing.T) {
 		if r.URL.Query().Get("user") != "admin" || r.URL.Query().Get("tokenName") != "cli" {
 			t.Errorf("params wrong: %v", r.URL.Query())
 		}
+		if r.URL.Query().Get("totp") != "123456" {
+			t.Errorf("totp wrong: %v", r.URL.Query().Get("totp"))
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"status":   "ok",
 			"response": map[string]any{"token": "abc123"},
 		})
 	})
-	tok, err := c.CreateToken(context.Background(), "admin", "secret", "cli")
+	tok, err := c.CreateToken(context.Background(), "admin", "secret", "123456", "cli")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
