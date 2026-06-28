@@ -19,6 +19,7 @@ type Remote struct {
 	AgentSocket string `mapstructure:"agent_socket"`
 	RemotePath  string `mapstructure:"remote_path"`
 	ReloadCmd   string `mapstructure:"reload_cmd"`
+	ValidateCmd string `mapstructure:"validate_cmd"`
 }
 
 type Caddy struct {
@@ -75,6 +76,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("caddy.remote.port", 22)
 	v.SetDefault("caddy.remote.remote_path", "/etc/caddy/Caddyfile")
 	v.SetDefault("caddy.remote.reload_cmd", "systemctl restart caddy")
+	v.SetDefault("caddy.remote.validate_cmd", "caddy adapt --adapter caddyfile")
 }
 
 func newViper(path string) *viper.Viper {

@@ -21,6 +21,7 @@ type InitValues struct {
 	AgentSocket string // set for ssh-agent auth; empty falls back to $SSH_AUTH_SOCK
 	RemotePath  string
 	ReloadCmd   string
+	ValidateCmd string
 	ManagedTag  string
 }
 
@@ -47,9 +48,10 @@ func DefaultInitValues() InitValues {
 		RemoteUser: "root",
 		RemotePort: 22,
 		SSHKey:     "",
-		RemotePath: "/etc/caddy/Caddyfile",
-		ReloadCmd:  "systemctl restart caddy",
-		ManagedTag: "managed-by:hl",
+		RemotePath:  "/etc/caddy/Caddyfile",
+		ReloadCmd:   "systemctl restart caddy",
+		ValidateCmd: "caddy adapt --adapter caddyfile",
+		ManagedTag:  "managed-by:hl",
 	}
 }
 
@@ -72,9 +74,10 @@ caddy:
     agent_socket: %q
     remote_path: %q
     reload_cmd: %q
+    validate_cmd: %q
 `,
 		v.URL, v.Token, v.LocalFile, v.ManagedTag,
-		v.RemoteHost, v.RemoteUser, v.RemotePort, v.SSHKey, v.AgentSocket, v.RemotePath, v.ReloadCmd)
+		v.RemoteHost, v.RemoteUser, v.RemotePort, v.SSHKey, v.AgentSocket, v.RemotePath, v.ReloadCmd, v.ValidateCmd)
 }
 
 // Write writes content to path (creating parent dirs), overwriting any existing

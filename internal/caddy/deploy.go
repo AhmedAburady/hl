@@ -3,6 +3,7 @@ package caddy
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -53,15 +54,16 @@ func WriteLocalFile(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0o600)
 }
 
-// Deploy writes the local Caddyfile to the remote host, reloads Caddy, and
-// restores the previous remote file if the reload fails. The file is written by
-// piping base64 through `tee` rather than SFTP, so a non-root SSH user can
-// elevate with sudo to reach privileged paths like /etc/caddy (passwordless
-// sudo required on the host).
-func Deploy(ctx context.Context, cfg config.Caddy) (string, error) {
-	remote := cfg.Remote
+// ErrValidate marks a deploy or check that aborted because the staged Caddyfile
+// failed validation; the live remote config is left untouched. The accompanying
+// output string carries the validator's human-readable reason.
+var ErrValidate = errors.New("caddyfile validation failed")
+
+// remoteTarget builds the SSH target and the sudo prefix (empty for root) from
+// the remote config, rejecting a missing host.
+func remoteTarget(remote config.Remote) (sshx.Target, string, error) {
 	if remote.Host == "" {
-		return "", fmt.Errorf("caddy.remote.host is not configured")
+		return sshx.Target{}, "", fmt.Errorf("caddy.remote.host is not configured")
 	}
 	t := sshx.Target{Host: remote.Host, User: remote.User, Port: remote.Port, KeyPath: remote.Key, AgentSocket: remote.AgentSocket}
 	if t.User == "" {
@@ -71,6 +73,83 @@ func Deploy(ctx context.Context, cfg config.Caddy) (string, error) {
 	if t.User != "root" {
 		sudo = "sudo "
 	}
+	return t, sudo, nil
+}
+
+// stageCmd renders a shell command that ensures the remote directory exists and
+// writes content (base64 over the wire) to the staging path, without touching
+// the live Caddyfile.
+func stageCmd(sudo, rp, staged string, content []byte) string {
+	encoded := base64.StdEncoding.EncodeToString(content)
+	return fmt.Sprintf(
+		"%smkdir -p %s && printf %%s %s | base64 -d | %stee %s >/dev/null",
+		sudo, shellQuote(filepath.Dir(rp)),
+		shellQuote(encoded), sudo, shellQuote(staged),
+	)
+}
+
+// validateCmd renders the validator command for the staged file. A `{file}`
+// placeholder is substituted; otherwise the path is appended as `--config
+// <file>`. The command is prefixed with sudo when the SSH user is not root.
+func validateCmd(cmd, sudo, staged string) string {
+	v := strings.TrimSpace(cmd)
+	if strings.Contains(v, "{file}") {
+		v = strings.ReplaceAll(v, "{file}", shellQuote(staged))
+	} else {
+		v = v + " --config " + shellQuote(staged)
+	}
+	if sudo != "" && !strings.HasPrefix(v, "sudo ") {
+		v = sudo + v
+	}
+	return v
+}
+
+// Validate stages the local Caddyfile to a temp path on the remote host and runs
+// the configured validator against it, leaving the live file untouched, then
+// removes the temp file. It returns the validator's output (the reason on
+// failure) and ErrValidate when the file is rejected. A blank validate_cmd
+// disables the check and returns ("", nil).
+func Validate(ctx context.Context, cfg config.Caddy) (string, error) {
+	remote := cfg.Remote
+	if strings.TrimSpace(remote.ValidateCmd) == "" {
+		return "", nil
+	}
+	t, sudo, err := remoteTarget(remote)
+	if err != nil {
+		return "", err
+	}
+	content, err := os.ReadFile(expandTilde(cfg.LocalFile))
+	if err != nil {
+		return "", fmt.Errorf("read local %s: %w", cfg.LocalFile, err)
+	}
+	rp := remote.RemotePath
+	staged := rp + ".hldns.new"
+	if out, err := sshx.Run(ctx, t, stageCmd(sudo, rp, staged, content)); err != nil {
+		return out, fmt.Errorf("stage %s: %w", staged, err)
+	}
+	out, verr := sshx.Run(ctx, t, validateCmd(remote.ValidateCmd, sudo, staged))
+	_, _ = sshx.Run(ctx, t, fmt.Sprintf("%srm -f %s", sudo, shellQuote(staged)))
+	if verr != nil {
+		return out, ErrValidate
+	}
+	return out, nil
+}
+
+// Deploy writes the local Caddyfile to the remote host, reloads Caddy, and
+// restores the previous remote file if the reload fails. The file is written by
+// piping base64 through `tee` rather than SFTP, so a non-root SSH user can
+// elevate with sudo to reach privileged paths like /etc/caddy (passwordless
+// sudo required on the host).
+//
+// The new file is first staged beside the live one and validated (unless
+// validate_cmd is blank); a validation failure aborts with ErrValidate and the
+// live config is never touched.
+func Deploy(ctx context.Context, cfg config.Caddy) (string, error) {
+	remote := cfg.Remote
+	t, sudo, err := remoteTarget(remote)
+	if err != nil {
+		return "", err
+	}
 
 	content, err := os.ReadFile(expandTilde(cfg.LocalFile))
 	if err != nil {
@@ -79,17 +158,29 @@ func Deploy(ctx context.Context, cfg config.Caddy) (string, error) {
 
 	rp := remote.RemotePath
 	backup := rp + ".hldns.bak"
-	encoded := base64.StdEncoding.EncodeToString(content)
+	staged := rp + ".hldns.new"
 
-	// One round-trip: ensure the dir, back up the current file, then write the
-	// new one decoded from base64 (keeps any content intact over the wire).
-	writeCmd := fmt.Sprintf(
-		"%smkdir -p %s && (%scp -f %s %s 2>/dev/null || true) && printf %%s %s | base64 -d | %stee %s >/dev/null",
-		sudo, shellQuote(filepath.Dir(rp)),
+	// Stage the new file beside the live one; the live Caddyfile stays put until
+	// the staged copy validates.
+	if out, err := sshx.Run(ctx, t, stageCmd(sudo, rp, staged, content)); err != nil {
+		return out, fmt.Errorf("stage %s: %w", staged, err)
+	}
+
+	// Validate the staged file. On failure the live config is never changed.
+	if strings.TrimSpace(remote.ValidateCmd) != "" {
+		if out, err := sshx.Run(ctx, t, validateCmd(remote.ValidateCmd, sudo, staged)); err != nil {
+			_, _ = sshx.Run(ctx, t, fmt.Sprintf("%srm -f %s", sudo, shellQuote(staged)))
+			return out, ErrValidate
+		}
+	}
+
+	// Promote: back up the live file, then move the staged copy into place.
+	promote := fmt.Sprintf(
+		"(%scp -f %s %s 2>/dev/null || true) && %smv -f %s %s",
 		sudo, shellQuote(rp), shellQuote(backup),
-		shellQuote(encoded), sudo, shellQuote(rp),
+		sudo, shellQuote(staged), shellQuote(rp),
 	)
-	if out, err := sshx.Run(ctx, t, writeCmd); err != nil {
+	if out, err := sshx.Run(ctx, t, promote); err != nil {
 		return out, fmt.Errorf("write %s: %w", rp, err)
 	}
 

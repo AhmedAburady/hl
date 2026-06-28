@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/AhmedAburady/hl/internal/caddy"
 	"github.com/AhmedAburady/hl/internal/config"
@@ -187,10 +188,19 @@ func newConfigShowCmd() *cobra.Command {
 			out(c, "    agent_socket: %s", agentSocketDisplay(cfg.Caddy.Remote.AgentSocket))
 			out(c, "    remote_path:  %s", cfg.Caddy.Remote.RemotePath)
 			out(c, "    reload_cmd:   %s", cfg.Caddy.Remote.ReloadCmd)
+			out(c, "    validate_cmd: %s", validateCmdDisplay(cfg.Caddy.Remote.ValidateCmd))
 			return nil
 		},
 	}
 	return cmd
+}
+
+// validateCmdDisplay shows the validator command, noting when it is disabled.
+func validateCmdDisplay(v string) string {
+	if strings.TrimSpace(v) == "" {
+		return "(disabled)"
+	}
+	return v
 }
 
 func redactKey(k string) string {

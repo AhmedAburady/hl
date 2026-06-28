@@ -17,6 +17,48 @@ func TestShellQuoteEscapesSingleQuotes(t *testing.T) {
 	}
 }
 
+func TestValidateCmd(t *testing.T) {
+	cases := []struct {
+		name              string
+		cmd, sudo, staged string
+		want              string
+	}{
+		{
+			name:   "appends config when no placeholder",
+			cmd:    "caddy adapt --adapter caddyfile",
+			staged: "/etc/caddy/Caddyfile.hldns.new",
+			want:   `caddy adapt --adapter caddyfile --config '/etc/caddy/Caddyfile.hldns.new'`,
+		},
+		{
+			name:   "substitutes file placeholder",
+			cmd:    "caddy validate --config {file} --adapter caddyfile",
+			staged: "/etc/caddy/Caddyfile.hldns.new",
+			want:   `caddy validate --config '/etc/caddy/Caddyfile.hldns.new' --adapter caddyfile`,
+		},
+		{
+			name:   "prefixes sudo for non-root",
+			cmd:    "caddy adapt --adapter caddyfile",
+			sudo:   "sudo ",
+			staged: "/etc/caddy/Caddyfile.hldns.new",
+			want:   `sudo caddy adapt --adapter caddyfile --config '/etc/caddy/Caddyfile.hldns.new'`,
+		},
+		{
+			name:   "does not double-prefix sudo",
+			cmd:    "sudo caddy adapt",
+			sudo:   "sudo ",
+			staged: "/x",
+			want:   `sudo caddy adapt --config '/x'`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := validateCmd(tc.cmd, tc.sudo, tc.staged); got != tc.want {
+				t.Errorf("validateCmd() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestExpandTilde(t *testing.T) {
 	if got := expandTilde("/abs/path"); got != "/abs/path" {
 		t.Errorf("absolute path changed: %q", got)
