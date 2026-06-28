@@ -11,8 +11,8 @@ Key facts:
 - Build the runnable binary as `hl`: `go build -o hl .`. Compile-all: `go build ./...`.
 - Verify before finishing: `go vet ./...` and `go test ./...`. Modernize with `go fix ./...` (safe, analysis-based).
 - Entry point is `main.go` → `cmd.Root()` → `fang.Execute` (Charm Fang on top of Cobra). All commands are `newXxxCmd()` factories in `cmd/` registered in `cmd/root.go`.
-- Domain logic is in `internal/`: `config` (Viper + `ResolveSecret` for token), `caddy` (Caddyfile parser, DNS annotations, SSH/SFTP deploy), `technitium` (HTTP API client), `reconcile` (desired-state derivation + diff/apply — the heart of sync), `sshx` (SSH dial/run/push).
-- DNS reconcile is ownership-scoped: records `hl` creates carry the `caddy.managed_tag` comment (default `managed-by:hl`); only tagged records are ever updated or pruned. Never widen this to untagged records.
+- Domain logic is in `internal/`: `config` (Viper + `ResolveSecret` for token), `caddy` (Caddyfile parser, DNS annotations, SSH deploy via base64|tee+sudo), `technitium` (HTTP API client), `reconcile` (desired-state derivation + diff/apply — the heart of sync), `sshx` (SSH dial/run).
+- DNS reconcile is ownership-scoped: records `hl` creates carry the `caddy.managed_tag` comment (default `managed-by:hl`); only tagged records are ever updated or pruned. The one exception is `hl sync --adopt`, which overwrites an existing **same-type** untagged record to take ownership of it (a single atomic `AddRecord`); it never deletes an untagged record of a different type. Without `--adopt`, an annotation that collides with an untagged record is reported as a conflict and skipped (and its name is protected from pruning). Do not widen untagged-record mutation beyond this.
 - Config lives at `~/.config/hl/config.yaml` (or `$XDG_CONFIG_HOME/hl/config.yaml` if set); env override prefix is `HLDNS_` (dots → underscores). The Technitium API token is created once in the web UI and stored in `technitium.token`; `config.ResolveSecret` resolves it at use time (literal, `${ENV}`, or an `op://` 1Password reference via `op read`). There is no login command.
 
 ## Task
@@ -22,7 +22,7 @@ of the `internal/` packages. Prefer reusing the existing helpers
 (`caddy.UpsertReverseProxy`, `caddy.UpsertDNSAnnotation`, `caddy.ParseSites`,
 `caddy.Deploy`, `reconcile.DeriveDesired`/`BuildPlan`/`Apply`,
 `technitium.Client.AddRecord`/`DeleteRecord`, the shared `runSync`/`reconcileDNS`
-in `cmd/sync.go`, `sshx.Run`/`sshx.PushFile`) over reimplementing them. The CLI is
+in `cmd/sync.go`, `sshx.Run`) over reimplementing them. The CLI is
 flags-driven and non-interactive, except `hl config init`, which runs an onboarding
 wizard over stdin when attached to a TTY (`term.IsTerminal`) and writes a complete
 template otherwise.
@@ -49,10 +49,15 @@ template otherwise.
    extending the reconciler, the client, and the tests in
    `internal/technitium/client_test.go` + `internal/reconcile/reconcile_test.go`.
 
-4. **Deploy is push-then-reload with rollback.** `caddy.Deploy` backs up the
-   remote file, SFTP-pushes the local file, runs `reload_cmd`, and restores the
-   backup on reload failure. Never edit the remote Caddyfile in place; the local
-   file is the source of truth.
+4. **Deploy is write-then-reload with rollback.** `caddy.Deploy` backs up the
+   remote file, writes the local file over SSH (base64 piped to `tee`, prefixed
+   with `sudo` when the SSH user is not root — no SFTP, so privileged paths like
+   /etc/caddy work; the host needs passwordless sudo), runs `reload_cmd`
+   (default `systemctl restart caddy` — restart, not `caddy reload`, so a stopped
+   Caddy is brought back up; reload only works against a running admin API), and
+   on failure restores the backup *and* re-runs `reload_cmd` so Caddy ends up on
+   the good config. Never edit the remote Caddyfile in place; the local file is
+   the source of truth.
 
 5. **Never log or print the Technitium token.** `config show` redacts it to
    `<set>`. Keep it that way.
@@ -99,4 +104,4 @@ Expected approach:
   ListZones → `/api/zones/list`). Auth is a UI-created API token (Bearer); no login.
 - DNS reconcile: `internal/reconcile/reconcile.go` (`DeriveDesired`, `Resolve`,
   `BuildPlan`, `Plan.Apply`); CLI glue in `cmd/sync.go` (`runSync`, `reconcileDNS`).
-- SSH/SFTP: `internal/sshx/sshx.go` (`Run`, `PushFile`, `dial`).
+- SSH: `internal/sshx/sshx.go` (`Run`, `dial`); deploy writes files via `caddy.Deploy` (base64|tee+sudo).

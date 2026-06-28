@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/AhmedAburady/hl/internal/caddy"
 	"github.com/AhmedAburady/hl/internal/config"
 	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
@@ -35,10 +36,12 @@ func newConfigInitCmd() *cobra.Command {
 				if config.Exists(path) && !force {
 					return fmt.Errorf("config already exists at %s (use --force to overwrite)", path)
 				}
-				if err := config.Write(path, config.Render(config.DefaultInitValues())); err != nil {
+				vals := config.DefaultInitValues()
+				if err := config.Write(path, config.Render(vals)); err != nil {
 					return fmt.Errorf("write config: %w", err)
 				}
 				out(c, "Wrote config template to %s; edit technitium.token and caddy.remote.host.", path)
+				ensureStarterCaddyfile(c, vals.LocalFile)
 				return nil
 			}
 
@@ -65,11 +68,26 @@ func newConfigInitCmd() *cobra.Command {
 				return fmt.Errorf("write config: %w", err)
 			}
 			out(c, "Wrote config to %s", path)
+			ensureStarterCaddyfile(c, vals.LocalFile)
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite an existing config without prompting")
 	return cmd
+}
+
+// ensureStarterCaddyfile writes a documented starter Caddyfile at path when none
+// exists, so a new user has an editable example. A failure is non-fatal.
+func ensureStarterCaddyfile(c *cobra.Command, path string) {
+	if path == "" || caddy.LocalFileExists(path) {
+		return
+	}
+	resolved := caddy.ResolvePath(path)
+	if err := caddy.WriteLocalFile(path, caddy.StarterCaddyfile()); err != nil {
+		out(c, "warning: could not create starter Caddyfile at %s: %v", resolved, err)
+		return
+	}
+	out(c, "Created a starter Caddyfile at %s (documents how to add hosts).", resolved)
 }
 
 // runInitWizard runs a styled form for the essential settings, mutating vals.

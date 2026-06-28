@@ -110,8 +110,9 @@ func TestListRecords_Decodes(t *testing.T) {
 		if r.URL.Path != "/api/zones/records/get" {
 			t.Errorf("path wrong: %s", r.URL.Path)
 		}
-		if r.URL.Query().Get("listZone") != "true" || r.URL.Query().Get("zone") != "home.lab" {
-			t.Errorf("params wrong: %v", r.URL.Query())
+		q := r.URL.Query()
+		if q.Get("listZone") != "true" || q.Get("zone") != "home.lab" || q.Get("domain") != "home.lab" {
+			t.Errorf("params wrong: %v", q)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"status": "ok",
@@ -140,7 +141,7 @@ func TestListRecords_Decodes(t *testing.T) {
 	}
 }
 
-func TestListPrimaryZones_FiltersToPrimary(t *testing.T) {
+func TestListManagedZones_FiltersToEditable(t *testing.T) {
 	c, _ := startServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/zones/list" {
 			t.Errorf("path wrong: %s", r.URL.Path)
@@ -152,17 +153,25 @@ func TestListPrimaryZones_FiltersToPrimary(t *testing.T) {
 					map[string]any{"name": "home.lab", "type": "Primary"},
 					map[string]any{"name": "fwd.example", "type": "Forwarder"},
 					map[string]any{"name": "sec.example", "type": "Secondary"},
+					map[string]any{"name": "cat.example", "type": "Catalog"},
+					map[string]any{"name": "0.in-addr.arpa", "type": "Primary", "internal": true},
 					map[string]any{"name": "synology.com", "type": "Primary"},
 				},
 			},
 		})
 	})
-	zones, err := c.ListPrimaryZones(context.Background())
+	zones, err := c.ListManagedZones(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(zones) != 2 || zones[0] != "home.lab" || zones[1] != "synology.com" {
-		t.Fatalf("expected only Primary zones, got %v", zones)
+	want := []string{"home.lab", "fwd.example", "synology.com"}
+	if len(zones) != len(want) {
+		t.Fatalf("expected %v, got %v", want, zones)
+	}
+	for i, z := range want {
+		if zones[i] != z {
+			t.Fatalf("expected %v, got %v", want, zones)
+		}
 	}
 }
 

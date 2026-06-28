@@ -10,6 +10,7 @@ import (
 	"github.com/AhmedAburady/hl/internal/config"
 	"github.com/AhmedAburady/hl/internal/reconcile"
 	"github.com/AhmedAburady/hl/internal/technitium"
+	"github.com/AhmedAburady/hl/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -19,6 +20,7 @@ type syncOpts struct {
 	noDeploy bool
 	noDNS    bool
 	noPrune  bool
+	adopt    bool
 }
 
 func newSyncCmd() *cobra.Command {
@@ -43,6 +45,7 @@ and pruning hl-managed records).`,
 	cmd.Flags().BoolVar(&o.noDeploy, "no-deploy", false, "skip the Caddy deploy; reconcile DNS only")
 	cmd.Flags().BoolVar(&o.noDNS, "no-dns", false, "deploy Caddy only; skip DNS reconcile")
 	cmd.Flags().BoolVar(&o.noPrune, "no-prune", false, "do not delete managed DNS records absent from the Caddyfile")
+	cmd.Flags().BoolVar(&o.adopt, "adopt", false, "overwrite existing records not managed by hl (take ownership)")
 	return cmd
 }
 
@@ -56,22 +59,26 @@ func runSync(c *cobra.Command, cfg *config.Config, o syncOpts) error {
 
 	if !o.noDeploy {
 		if o.dryRun {
-			out(c, "[dry-run] would deploy %s to %s and reload", cfg.Caddy.LocalFile, cfg.Caddy.Remote.Host)
+			out(c, "%s", ui.Info("[dry-run] would deploy %s to %s and reload", cfg.Caddy.LocalFile, cfg.Caddy.Remote.Host))
 		} else {
-			out(c, "Deploying to %s ...", cfg.Caddy.Remote.Host)
+			out(c, "%s", ui.Step("Deploying to %s …", cfg.Caddy.Remote.Host))
 			deployOut, err := caddy.Deploy(c.Context(), cfg.Caddy)
 			if err != nil {
+				// Surface the remote output — the actual reason the deploy failed.
+				if s := strings.TrimSpace(deployOut); s != "" {
+					out(c, "%s", ui.Detail(s))
+				}
 				return fmt.Errorf("deploy: %w", err)
 			}
-			out(c, "Caddy reloaded.")
+			out(c, "%s", ui.OK("Caddy reloaded."))
 			if s := strings.TrimSpace(deployOut); s != "" {
-				out(c, "reload output: %s", s)
+				out(c, "%s", ui.Detail(s))
 			}
 		}
 	}
 
 	if !o.noDNS {
-		if err := reconcileDNS(c, cfg, content, o.dryRun, o.noPrune); err != nil {
+		if err := reconcileDNS(c, cfg, content, o.dryRun, o.noPrune, o.adopt); err != nil {
 			return err
 		}
 	}
@@ -79,8 +86,9 @@ func runSync(c *cobra.Command, cfg *config.Config, o syncOpts) error {
 }
 
 // reconcileDNS derives desired records from the Caddyfile content and brings the
-// Technitium zone(s) into line, printing the plan. With dryRun it only prints.
-func reconcileDNS(c *cobra.Command, cfg *config.Config, content string, dryRun, noPrune bool) error {
+// Technitium zone(s) into line, printing the plan. With dryRun it only prints;
+// with adopt it overwrites records hl does not already manage.
+func reconcileDNS(c *cobra.Command, cfg *config.Config, content string, dryRun, noPrune, adopt bool) error {
 	sites, err := caddy.ParseSites(content)
 	if err != nil {
 		return err
@@ -96,13 +104,13 @@ func reconcileDNS(c *cobra.Command, cfg *config.Config, content string, dryRun, 
 		// has site blocks IS a legitimate "drop these records" signal, so that
 		// case (sites present, token set) falls through to reconcile below.
 		if strings.TrimSpace(content) == "" || len(sites) == 0 {
-			out(c, "DNS: no site blocks in %s; skipping reconcile (not pruning)", cfg.Caddy.LocalFile)
+			out(c, "%s", ui.Info("DNS: no site blocks in %s; skipping reconcile (not pruning)", cfg.Caddy.LocalFile))
 			return nil
 		}
 		// No annotations and no token: nothing to manage, and we won't force the
 		// user to configure a token just to be told there is nothing to do.
 		if cfg.Technitium.Token == "" {
-			out(c, "DNS: no managed records declared in %s", cfg.Caddy.LocalFile)
+			out(c, "%s", ui.Info("DNS: no managed records declared in %s", cfg.Caddy.LocalFile))
 			return nil
 		}
 	}
@@ -110,29 +118,42 @@ func reconcileDNS(c *cobra.Command, cfg *config.Config, content string, dryRun, 
 	if err != nil {
 		return err
 	}
-	actual, err := listManagedRecords(c, cl)
+	actual, err := listZoneRecords(c, cl)
 	if err != nil {
 		return err
 	}
 
-	plan := reconcile.BuildPlan(desired, actual, cfg.Caddy.ManagedTag)
+	plan := reconcile.BuildPlan(desired, actual, cfg.Caddy.ManagedTag, adopt)
 	if noPrune {
 		plan.Delete = nil
 	}
 
-	if plan.Empty() {
-		out(c, "DNS: up to date (%d managed records)", len(desired))
+	if plan.Empty() && len(plan.Conflict) == 0 {
+		out(c, "%s", ui.OK("DNS up to date (%d managed records)", len(desired)))
 		return nil
 	}
-	out(c, "DNS plan:")
-	out(c, "%s", plan.String())
+	if dryRun {
+		out(c, "%s", ui.Heading("DNS plan (dry-run, nothing applied)"))
+	} else {
+		out(c, "%s", ui.Heading("DNS changes"))
+	}
+	out(c, "%s", ui.RenderPlan(plan))
+	if len(plan.Conflict) > 0 {
+		out(c, "")
+		out(c, "%s", ui.Warn("%d record(s) already exist and are not managed by hl. Re-run with --adopt", len(plan.Conflict)))
+		out(c, "%s", ui.Info("  to overwrite same-type records; a cross-type collision (e.g. a CNAME"))
+		out(c, "%s", ui.Info("  over an existing A or TXT) must be removed by hand first."))
+	}
 	if dryRun {
 		return nil
+	}
+	if plan.Empty() {
+		return nil // only conflicts, which are not applied without --adopt
 	}
 	if err := plan.Apply(c.Context(), cl, cfg.Caddy.ManagedTag); err != nil {
 		return err
 	}
-	out(c, "DNS reconciled (%d created, %d updated, %d deleted).", len(plan.Create), len(plan.Update), len(plan.Delete))
+	out(c, "%s", ui.OK("DNS reconciled — %d created, %d updated, %d deleted", len(plan.Create), len(plan.Update), len(plan.Delete)))
 	return nil
 }
 
@@ -155,12 +176,13 @@ func technitiumClient(c *cobra.Command, cfg *config.Config) (*technitium.Client,
 	return technitium.New(cfg.Technitium.URL, token), nil
 }
 
-// listManagedRecords fetches records across every authoritative zone on the
-// server. Scanning all zones (rather than only those currently referenced by the
-// Caddyfile) ensures a managed record is still pruned after the block that
-// created it changes zones or is removed entirely.
-func listManagedRecords(c *cobra.Command, cl *technitium.Client) ([]technitium.Record, error) {
-	zones, err := cl.ListPrimaryZones(c.Context())
+// listZoneRecords fetches all records across every zone hl can manage. Scanning
+// all zones (rather than only those currently referenced by the Caddyfile)
+// ensures a managed record is still pruned after the block that created it
+// changes zones or is removed entirely, and lets conflict detection see existing
+// unmanaged records anywhere.
+func listZoneRecords(c *cobra.Command, cl *technitium.Client) ([]technitium.Record, error) {
+	zones, err := cl.ListManagedZones(c.Context())
 	if err != nil {
 		return nil, fmt.Errorf("list zones: %w", err)
 	}

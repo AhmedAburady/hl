@@ -74,7 +74,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("caddy.managed_tag", "managed-by:hl")
 	v.SetDefault("caddy.remote.port", 22)
 	v.SetDefault("caddy.remote.remote_path", "/etc/caddy/Caddyfile")
-	v.SetDefault("caddy.remote.reload_cmd", "caddy reload --config /etc/caddy/Caddyfile")
+	v.SetDefault("caddy.remote.reload_cmd", "systemctl restart caddy")
 }
 
 func newViper(path string) *viper.Viper {

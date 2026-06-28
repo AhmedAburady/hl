@@ -2,6 +2,7 @@ package caddy
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -52,8 +53,11 @@ func WriteLocalFile(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0o600)
 }
 
-// Deploy pushes the local Caddyfile to the remote host, reloads Caddy, and
-// restores the previous remote file if the reload fails.
+// Deploy writes the local Caddyfile to the remote host, reloads Caddy, and
+// restores the previous remote file if the reload fails. The file is written by
+// piping base64 through `tee` rather than SFTP, so a non-root SSH user can
+// elevate with sudo to reach privileged paths like /etc/caddy (passwordless
+// sudo required on the host).
 func Deploy(ctx context.Context, cfg config.Caddy) (string, error) {
 	remote := cfg.Remote
 	if remote.Host == "" {
@@ -63,24 +67,45 @@ func Deploy(ctx context.Context, cfg config.Caddy) (string, error) {
 	if t.User == "" {
 		t.User = "root"
 	}
-
-	backup := remote.RemotePath + ".hldns.bak"
-	backupCmd := fmt.Sprintf("cp -f %s %s 2>/dev/null || true", shellQuote(remote.RemotePath), shellQuote(backup))
-	if _, err := sshx.Run(ctx, t, backupCmd); err != nil {
-		return "", fmt.Errorf("remote backup: %w", err)
+	sudo := ""
+	if t.User != "root" {
+		sudo = "sudo "
 	}
 
-	if err := sshx.PushFile(ctx, t, expandTilde(cfg.LocalFile), remote.RemotePath); err != nil {
-		return "", fmt.Errorf("push: %w", err)
+	content, err := os.ReadFile(expandTilde(cfg.LocalFile))
+	if err != nil {
+		return "", fmt.Errorf("read local %s: %w", cfg.LocalFile, err)
+	}
+
+	rp := remote.RemotePath
+	backup := rp + ".hldns.bak"
+	encoded := base64.StdEncoding.EncodeToString(content)
+
+	// One round-trip: ensure the dir, back up the current file, then write the
+	// new one decoded from base64 (keeps any content intact over the wire).
+	writeCmd := fmt.Sprintf(
+		"%smkdir -p %s && (%scp -f %s %s 2>/dev/null || true) && printf %%s %s | base64 -d | %stee %s >/dev/null",
+		sudo, shellQuote(filepath.Dir(rp)),
+		sudo, shellQuote(rp), shellQuote(backup),
+		shellQuote(encoded), sudo, shellQuote(rp),
+	)
+	if out, err := sshx.Run(ctx, t, writeCmd); err != nil {
+		return out, fmt.Errorf("write %s: %w", rp, err)
 	}
 
 	reload := remote.ReloadCmd
 	if reload == "" {
-		reload = "caddy reload --config " + shellQuote(remote.RemotePath)
+		reload = "systemctl restart caddy"
+	}
+	if sudo != "" && !strings.HasPrefix(strings.TrimSpace(reload), "sudo ") {
+		reload = sudo + reload
 	}
 	out, err := sshx.Run(ctx, t, reload)
 	if err != nil {
-		_, _ = sshx.Run(ctx, t, fmt.Sprintf("mv -f %s %s", shellQuote(backup), shellQuote(remote.RemotePath)))
+		// Restore the backup and re-run reload so a failed restart still leaves
+		// Caddy up on the good config.
+		_, _ = sshx.Run(ctx, t, fmt.Sprintf("%smv -f %s %s", sudo, shellQuote(backup), shellQuote(rp)))
+		_, _ = sshx.Run(ctx, t, reload)
 		return out, fmt.Errorf("reload failed (restored previous config): %w", err)
 	}
 	return out, nil

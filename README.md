@@ -25,7 +25,9 @@ hand-made records are never touched.
 ## Requirements
 
 - Go 1.26 or newer
-- SSH access to the host running Caddy (key-based or ssh-agent)
+- SSH access to the host running Caddy (key-based or ssh-agent). If the SSH user
+  is not `root`, it needs passwordless `sudo` — hl writes the Caddyfile and
+  reloads Caddy via `sudo` so it can reach privileged paths like `/etc/caddy`.
 - A [Technitium DNS Server](https://technitium.com/dns/) with its HTTP API enabled
 
 ## Install
@@ -36,6 +38,21 @@ The command is invoked as `hl`.
 
 ```sh
 go install github.com/AhmedAburady/hl@latest
+```
+
+**Or download a pre-built binary** (macOS and Linux) from the
+[Releases](https://github.com/AhmedAburady/hl/releases) page:
+
+| Platform | Architecture | Binary |
+|---|---|---|
+| macOS | Apple Silicon | `hl-darwin-arm64` |
+| macOS | Intel | `hl-darwin-amd64` |
+| Linux | x64 | `hl-linux-amd64` |
+| Linux | ARM64 | `hl-linux-arm64` |
+
+```sh
+chmod +x hl-darwin-arm64
+sudo mv hl-darwin-arm64 /usr/local/bin/hl   # or anywhere on your PATH
 ```
 
 **Or build from source:**
@@ -91,7 +108,7 @@ caddy:
     key: ~/.ssh/id_ed25519        # private key; leave empty to use ssh-agent
     agent_socket: ""              # ssh-agent socket; empty falls back to $SSH_AUTH_SOCK
     remote_path: /etc/caddy/Caddyfile
-    reload_cmd: "caddy reload --config /etc/caddy/Caddyfile"
+    reload_cmd: "systemctl restart caddy"   # run on the host after the file is written (sudo auto-added for non-root)
 ```
 
 There are no DNS defaults in config: the Caddyfile is the sole source of truth, so
@@ -147,7 +164,16 @@ hl sync --dry-run    # show the plan; change nothing
 hl sync --no-dns     # deploy Caddy only
 hl sync --no-deploy  # reconcile DNS only
 hl sync --no-prune   # never delete managed records absent from the file
+hl sync --adopt      # overwrite existing records hl does not manage
 ```
+
+hl only ever touches records it created (tagged `managed-by:hl`). If an
+annotation would land on a record that already exists and is **not** managed by
+hl, it is reported as a conflict (`!`) and skipped, and that name is protected
+from pruning. Re-run with `--adopt` to take ownership by overwriting it — but
+only when the existing record is the **same type** (a single atomic write). A
+cross-type collision (e.g. a CNAME over an existing A or TXT) is never resolved
+by deleting the other record; remove it by hand first.
 
 ### `hl status` — preview without changing anything
 
@@ -156,7 +182,8 @@ hl status
 ```
 
 Lists the hosts in your Caddyfile and the pending DNS plan (`+` create, `~`
-update, `-` delete) — a read-only `sync --dry-run` that never deploys.
+update, `-` delete, `!` conflict with an unmanaged record) — a read-only
+`sync --dry-run` that never deploys.
 
 You edit the Caddyfile directly — add a block, add its annotation — then run
 `hl sync`. There is no `add` command: the file is the source of truth.
@@ -167,7 +194,7 @@ You edit the Caddyfile directly — add a block, add its annotation — then run
 | --- | --- |
 | `hl sync` | Deploy the Caddyfile and reconcile DNS from annotations |
 | `hl status` | Show hosts + the pending DNS plan (read-only) |
-| `hl dns list` | List records in a zone (`--zone`, required) |
+| `hl dns list` | List hl-managed records (`--zone` defaults to Caddyfile zones; `--all` for every record) |
 | `hl config init` | Create the config file (interactive wizard on a TTY, template otherwise) |
 | `hl config show` | Print effective config (token redacted) |
 
@@ -181,8 +208,9 @@ You edit the Caddyfile directly — add a block, add its annotation — then run
 - The Technitium token is never printed (`hl config show` shows `<set>`).
 - DNS reconcile only ever updates or deletes records carrying the `managed_tag`
   comment that `hl` sets on records it creates. Records you made by hand (and
-  infrastructure records like NS/MX/SOA) are never touched. Preview with
-  `hl status` and use `--no-prune` to suppress deletions.
+  infrastructure records like NS/MX/SOA) are never touched — an annotation that
+  collides with one is reported as a conflict and skipped unless you pass
+  `--adopt`. Preview with `hl status` and use `--no-prune` to suppress deletions.
 
 ## Development
 

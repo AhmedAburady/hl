@@ -225,12 +225,15 @@ func (c *Client) ListRecords(ctx context.Context, zone, domain string) ([]Record
 	if zone == "" {
 		return nil, errors.New("zone is required")
 	}
+	// The records/get endpoint requires a domain; with listZone=true it returns
+	// the whole zone, so default domain to the zone name when none is given.
+	if domain == "" {
+		domain = zone
+	}
 	params := url.Values{}
 	params.Set("zone", zone)
+	params.Set("domain", domain)
 	params.Set("listZone", "true")
-	if domain != "" {
-		params.Set("domain", domain)
-	}
 
 	ar, err := c.do(ctx, "/api/zones/records/get", params)
 	if err != nil {
@@ -249,20 +252,20 @@ func (c *Client) ListRecords(ctx context.Context, zone, domain string) ([]Record
 	return res.Records, nil
 }
 
-// ListPrimaryZones returns the names of Primary (authoritative) zones the token
-// can view. The zones/list endpoint returns every zone type (Secondary, Stub,
-// Forwarder, ...); hl only writes records into Primary zones, so the rest are
-// excluded — they would not hold managed records and may not enumerate the same
-// way.
-func (c *Client) ListPrimaryZones(ctx context.Context) ([]string, error) {
+// ListManagedZones returns the zones hl can hold records in: Primary and
+// Forwarder (conditional-forwarder zones accept override A/CNAME records too).
+// Secondary/Catalog are read-only for records, and Internal zones (e.g.
+// 0.in-addr.arpa) reject edits, so both are excluded.
+func (c *Client) ListManagedZones(ctx context.Context) ([]string, error) {
 	ar, err := c.do(ctx, "/api/zones/list", nil)
 	if err != nil {
 		return nil, err
 	}
 	var res struct {
 		Zones []struct {
-			Name string `json:"name"`
-			Type string `json:"type"`
+			Name     string `json:"name"`
+			Type     string `json:"type"`
+			Internal bool   `json:"internal"`
 		} `json:"zones"`
 	}
 	if err := json.Unmarshal(ar.Response, &res); err != nil {
@@ -270,7 +273,7 @@ func (c *Client) ListPrimaryZones(ctx context.Context) ([]string, error) {
 	}
 	names := make([]string, 0, len(res.Zones))
 	for _, z := range res.Zones {
-		if z.Type == "Primary" {
+		if (z.Type == "Primary" || z.Type == "Forwarder") && !z.Internal {
 			names = append(names, z.Name)
 		}
 	}

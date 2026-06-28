@@ -1,0 +1,49 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Build binaries
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          LDFLAGS="-s -w -X main.version=$VERSION"
+
+          # Linux
+          GOOS=linux GOARCH=amd64 go build -ldflags "$LDFLAGS" -o hl-linux-amd64 .
+          GOOS=linux GOARCH=arm64 go build -ldflags "$LDFLAGS" -o hl-linux-arm64 .
+
+          # macOS
+          GOOS=darwin GOARCH=amd64 go build -ldflags "$LDFLAGS" -o hl-darwin-amd64 .
+          GOOS=darwin GOARCH=arm64 go build -ldflags "$LDFLAGS" -o hl-darwin-arm64 .
+
+          sha256sum hl-* > checksums.txt
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            hl-linux-amd64
+            hl-linux-arm64
+            hl-darwin-amd64
+            hl-darwin-arm64
+            checksums.txt
+          generate_release_notes: true

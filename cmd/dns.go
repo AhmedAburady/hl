@@ -1,10 +1,13 @@
 package cmd
 
 import (
-	"errors"
 	"fmt"
+	"sort"
 
+	"github.com/AhmedAburady/hl/internal/caddy"
+	"github.com/AhmedAburady/hl/internal/config"
 	"github.com/AhmedAburady/hl/internal/technitium"
+	"github.com/AhmedAburady/hl/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -18,45 +21,106 @@ func newDNSCmd() *cobra.Command {
 }
 
 func newDNSListCmd() *cobra.Command {
-	var zone string
+	var (
+		zone string
+		all  bool
+	)
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List records in a Technitium zone",
+		Short: "List hl-managed records (use --all for every record in the zone)",
 		RunE: func(c *cobra.Command, _ []string) error {
 			cfg, err := loadCfg()
 			if err != nil {
 				return err
 			}
-			if zone == "" {
-				return errors.New("no zone: pass --zone")
+
+			var zones []string
+			if zone != "" {
+				zones = []string{zone}
+			} else {
+				zones, err = zonesFromCaddyfile(cfg)
+				if err != nil {
+					return err
+				}
+				if len(zones) == 0 {
+					out(c, "%s", ui.Info("No --zone given and no DNS zones declared in %s.", cfg.Caddy.LocalFile))
+					out(c, "%s", ui.Info("Pass --zone <zone> to list a specific zone."))
+					return nil
+				}
 			}
+
 			cl, err := technitiumClient(c, cfg)
 			if err != nil {
 				return err
 			}
-			records, err := cl.ListRecords(c.Context(), zone, "")
-			if err != nil {
-				return fmt.Errorf("list records: %w", err)
+			tag := cfg.Caddy.ManagedTag
+
+			// One unreadable/absent zone (e.g. an annotation for a zone not yet
+			// created) must not hide the others — warn and keep going.
+			var records []technitium.Record
+			var failed int
+			for _, z := range zones {
+				recs, err := cl.ListRecords(c.Context(), z, "")
+				if err != nil {
+					failed++
+					out(c, "%s", ui.Warn("zone %s: %v", z, err))
+					continue
+				}
+				for _, r := range recs {
+					if all || r.Comments == tag {
+						records = append(records, r)
+					}
+				}
 			}
-			out(c, "%-32s %-6s %-6s %s", "NAME", "TYPE", "TTL", "VALUE")
-			for _, r := range records {
-				out(c, "%-32s %-6s %-6d %s", r.Name, r.Type, r.TTL, recordValue(r))
+
+			if len(records) == 0 {
+				switch {
+				case failed == len(zones):
+					return fmt.Errorf("no zones could be listed (%d failed)", failed)
+				case all:
+					out(c, "%s", ui.Info("No records found."))
+				default:
+					out(c, "%s", ui.Info("No hl-managed records (tagged %q). Pass --all to list every record.", tag))
+				}
+				return nil
+			}
+
+			out(c, "%s", ui.RenderRecords(records, all, tag))
+			if all {
+				out(c, "%s", ui.Info("● = managed by hl (%s)", tag))
+			}
+			if failed > 0 {
+				out(c, "%s", ui.Warn("%d of %d zone(s) could not be listed (see warnings above)", failed, len(zones)))
 			}
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&zone, "zone", "", "DNS zone (required)")
+	cmd.Flags().StringVar(&zone, "zone", "", "DNS zone (defaults to zones in the Caddyfile)")
+	cmd.Flags().BoolVar(&all, "all", false, "list all records, not just hl-managed ones")
 	return cmd
 }
 
-func recordValue(r technitium.Record) string {
-	if r.RData == nil {
-		return ""
+// zonesFromCaddyfile returns the distinct, sorted set of zones declared in the
+// local Caddyfile's DNS annotations.
+func zonesFromCaddyfile(cfg *config.Config) ([]string, error) {
+	content, err := caddy.ReadLocalFile(cfg.Caddy.LocalFile)
+	if err != nil {
+		return nil, err
 	}
-	for _, k := range []string{"ipAddress", "cname", "nameServer", "exchange", "text", "target"} {
-		if v, ok := r.RData[k]; ok {
-			return fmt.Sprintf("%v", v)
+	sites, err := caddy.ParseSites(content)
+	if err != nil {
+		return nil, err
+	}
+	set := map[string]bool{}
+	for _, s := range sites {
+		if s.DNS.Present && s.DNS.Zone != "" {
+			set[s.DNS.Zone] = true
 		}
 	}
-	return ""
+	zones := make([]string, 0, len(set))
+	for z := range set {
+		zones = append(zones, z)
+	}
+	sort.Strings(zones)
+	return zones, nil
 }

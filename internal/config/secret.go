@@ -16,6 +16,10 @@ import (
 // This lets the Technitium token be stored as a literal, an env reference, or a
 // 1Password reference without a login step.
 func ResolveSecret(ctx context.Context, s string) (string, error) {
+	// Be forgiving of a value pasted with surrounding whitespace or quotes so a
+	// token entered as "op://..." is still recognized as a reference, not a
+	// literal that gets sent to the server verbatim.
+	s = trimQuotes(strings.TrimSpace(s))
 	switch {
 	case strings.HasPrefix(s, "op://"):
 		out, err := exec.CommandContext(ctx, "op", "read", "--no-newline", s).Output()
@@ -35,4 +39,14 @@ func ResolveSecret(ctx context.Context, s string) (string, error) {
 	default:
 		return s, nil
 	}
+}
+
+// trimQuotes removes one matching pair of surrounding single or double quotes.
+func trimQuotes(s string) string {
+	if len(s) >= 2 {
+		if c := s[0]; (c == '"' || c == '\'') && s[len(s)-1] == c {
+			return s[1 : len(s)-1]
+		}
+	}
+	return s
 }

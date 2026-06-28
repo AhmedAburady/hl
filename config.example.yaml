@@ -12,4 +12,4 @@ caddy:
     key: ~/.ssh/id_ed25519
     agent_socket: ""
     remote_path: /etc/caddy/Caddyfile
-    reload_cmd: caddy reload --config /etc/caddy/Caddyfile
+    reload_cmd: systemctl restart caddy

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"github.com/AhmedAburady/hl/internal/caddy"
+	"github.com/AhmedAburady/hl/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -29,22 +30,13 @@ modifying anything.`,
 			}
 
 			if len(sites) == 0 {
-				out(c, "No site blocks in %s", cfg.Caddy.LocalFile)
+				out(c, "%s", ui.Info("No site blocks in %s", cfg.Caddy.LocalFile))
 			} else {
-				out(c, "Hosts in %s:", cfg.Caddy.LocalFile)
-				for _, s := range sites {
-					dns := "no dns"
-					if s.DNS.Present {
-						dns = "dns: " + s.DNS.Name
-						if s.DNS.Type != "" {
-							dns += " " + s.DNS.Type
-						}
-					}
-					out(c, "  %-32s -> %-24s (%s)", s.Host, s.Upstream, dns)
-				}
+				out(c, "%s", ui.Heading("Hosts in %s", cfg.Caddy.LocalFile))
+				out(c, "%s", ui.RenderHosts(sites))
 			}
 			out(c, "")
-			return reconcileDNS(c, cfg, content, true, noPrune)
+			return reconcileDNS(c, cfg, content, true, noPrune, false)
 		},
 	}
 	cmd.Flags().BoolVar(&noPrune, "no-prune", false, "exclude managed-record deletions from the plan")

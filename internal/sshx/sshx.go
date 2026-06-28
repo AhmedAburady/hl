@@ -2,6 +2,8 @@ package sshx
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -9,9 +11,9 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
-	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/crypto/ssh/knownhosts"
@@ -89,28 +91,90 @@ func authMethods(keyPath, agentSocket string) ([]ssh.AuthMethod, func(), error) 
 	return methods, cleanup, nil
 }
 
-func hostKeyCallback() ssh.HostKeyCallback {
+// knownHostsCallback returns the raw knownhosts checker, or ok == false when no
+// known_hosts file is usable (caller then skips verification, as before).
+func knownHostsCallback() (ssh.HostKeyCallback, bool) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return ssh.InsecureIgnoreHostKey()
+		return nil, false
 	}
 	cb, err := knownhosts.New(filepath.Join(home, ".ssh", "known_hosts"))
 	if err != nil {
 		slog.Warn("known_hosts unavailable, skipping host key verification", "err", err)
-		return ssh.InsecureIgnoreHostKey()
+		return nil, false
 	}
+	return cb, true
+}
+
+// tofuCallback wraps the knownhosts checker to accept an unknown host on first
+// use (with a warning) while still rejecting a genuine key mismatch.
+func tofuCallback(cb ssh.HostKeyCallback) ssh.HostKeyCallback {
 	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
 		err := cb(hostname, remote, key)
 		if err == nil {
 			return nil
 		}
 		if ke, ok := errors.AsType[*knownhosts.KeyError](err); ok && len(ke.Want) == 0 {
-			slog.Warn("host key not in known_hosts, accepting on first use", "host", hostname)
+			if _, dup := warnedHosts.LoadOrStore(hostname, true); !dup {
+				slog.Warn("host key not in known_hosts, accepting on first use", "host", hostname)
+			}
 			return nil
 		}
 		return err
 	}
 }
+
+// hostKeyAlgorithms returns the host-key algorithms to request for addr, taken
+// from the key types already pinned in known_hosts. This mirrors OpenSSH, which
+// offers the type it has on record; without it the Go client can be handed a key
+// type that isn't pinned (e.g. ecdsa when only ed25519 is known) and report a
+// false "key mismatch". Returns nil for an unknown host so first-use still works.
+func hostKeyAlgorithms(cb ssh.HostKeyCallback, addr string) []string {
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil
+	}
+	probe, err := ssh.NewPublicKey(pub)
+	if err != nil {
+		return nil
+	}
+	var remote net.Addr
+	if host, port, err := net.SplitHostPort(addr); err == nil {
+		p, _ := strconv.Atoi(port)
+		remote = &net.TCPAddr{IP: net.ParseIP(host), Port: p}
+	}
+	// A throwaway key never matches, so knownhosts reports every key pinned for
+	// the host in KeyError.Want; their types are the algorithms to request.
+	ke, ok := errors.AsType[*knownhosts.KeyError](cb(addr, remote, probe))
+	if !ok || len(ke.Want) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	var algos []string
+	for _, k := range ke.Want {
+		for _, a := range signatureAlgos(k.Key.Type()) {
+			if !seen[a] {
+				seen[a] = true
+				algos = append(algos, a)
+			}
+		}
+	}
+	return algos
+}
+
+// signatureAlgos maps a pinned host-key type to the signature algorithms a
+// client should advertise for it. An RSA key expands to the SHA-2 variants
+// modern servers require (plain ssh-rsa is often refused).
+func signatureAlgos(keyType string) []string {
+	if keyType == ssh.KeyAlgoRSA {
+		return []string{ssh.KeyAlgoRSASHA256, ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSA}
+	}
+	return []string{keyType}
+}
+
+// warnedHosts dedupes the first-use host-key warning so a single run that opens
+// several connections to the same host only warns once.
+var warnedHosts sync.Map
 
 func dial(ctx context.Context, t Target) (*ssh.Client, error) {
 	methods, cleanup, err := authMethods(t.KeyPath, t.AgentSocket)
@@ -119,10 +183,15 @@ func dial(ctx context.Context, t Target) (*ssh.Client, error) {
 	}
 	defer cleanup()
 	cfg := &ssh.ClientConfig{
-		User:            t.User,
-		Auth:            methods,
-		HostKeyCallback: hostKeyCallback(),
-		Timeout:         15 * time.Second,
+		User:    t.User,
+		Auth:    methods,
+		Timeout: 15 * time.Second,
+	}
+	if raw, ok := knownHostsCallback(); ok {
+		cfg.HostKeyCallback = tofuCallback(raw)
+		cfg.HostKeyAlgorithms = hostKeyAlgorithms(raw, t.addr())
+	} else {
+		cfg.HostKeyCallback = ssh.InsecureIgnoreHostKey()
 	}
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "tcp", t.addr())
@@ -156,36 +225,4 @@ func Run(ctx context.Context, t Target, cmd string) (string, error) {
 		return string(out), fmt.Errorf("remote command failed: %w", err)
 	}
 	return string(out), nil
-}
-
-// PushFile uploads local file content to remotePath via SFTP.
-func PushFile(ctx context.Context, t Target, localPath, remotePath string) error {
-	client, err := dial(ctx, t)
-	if err != nil {
-		return err
-	}
-	defer client.Close()
-
-	sc, err := sftp.NewClient(client)
-	if err != nil {
-		return fmt.Errorf("sftp client: %w", err)
-	}
-	defer sc.Close()
-
-	src, err := os.Open(localPath)
-	if err != nil {
-		return fmt.Errorf("open local %s: %w", localPath, err)
-	}
-	defer src.Close()
-
-	dst, err := sc.Create(remotePath)
-	if err != nil {
-		return fmt.Errorf("create remote %s: %w", remotePath, err)
-	}
-	defer dst.Close()
-
-	if _, err := dst.ReadFrom(src); err != nil {
-		return fmt.Errorf("upload %s: %w", remotePath, err)
-	}
-	return nil
 }

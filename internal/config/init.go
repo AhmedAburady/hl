@@ -48,7 +48,7 @@ func DefaultInitValues() InitValues {
 		RemotePort: 22,
 		SSHKey:     "",
 		RemotePath: "/etc/caddy/Caddyfile",
-		ReloadCmd:  "caddy reload --config /etc/caddy/Caddyfile",
+		ReloadCmd:  "systemctl restart caddy",
 		ManagedTag: "managed-by:hl",
 	}
 }
