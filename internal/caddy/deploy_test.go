@@ -52,10 +52,37 @@ func TestValidateCmd(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := validateCmd(tc.cmd, tc.sudo, tc.staged); got != tc.want {
+			got, err := validateCmd(tc.cmd, tc.sudo, tc.staged)
+			if err != nil {
+				t.Fatalf("validateCmd() unexpected error: %v", err)
+			}
+			if got != tc.want {
 				t.Errorf("validateCmd() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestValidateCmdRejectsOwnConfig(t *testing.T) {
+	if _, err := validateCmd("caddy adapt --config /etc/caddy/Caddyfile", "", "/x"); err == nil {
+		t.Fatal("expected error when validate_cmd sets its own --config without {file}")
+	}
+	// With the placeholder it is allowed even though --config is present.
+	if _, err := validateCmd("caddy adapt --config {file}", "", "/x"); err != nil {
+		t.Fatalf("placeholder form should be accepted: %v", err)
+	}
+}
+
+func TestExtractRC(t *testing.T) {
+	body, rc, ok := extractRC("line one\nline two\n" + validateRCMarker + "127\n")
+	if !ok || rc != 127 {
+		t.Fatalf("extractRC rc = %d ok = %v, want 127 true", rc, ok)
+	}
+	if body != "line one\nline two" {
+		t.Errorf("extractRC body = %q, want stripped of marker", body)
+	}
+	if _, _, ok := extractRC("no marker here"); ok {
+		t.Error("extractRC reported ok with no marker present")
 	}
 }
 

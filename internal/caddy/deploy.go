@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -88,27 +89,97 @@ func stageCmd(sudo, rp, staged string, content []byte) string {
 	)
 }
 
+// stagedPath returns a per-process staging path beside rp. The pid + timestamp
+// suffix keeps concurrent `hl sync` runs from clobbering each other's candidate
+// file.
+func stagedPath(rp string) string {
+	return fmt.Sprintf("%s.hldns.%d-%d.new", rp, os.Getpid(), time.Now().UnixNano())
+}
+
+// hasConfigFlag reports whether cmd already passes its own --config/-c, in which
+// case appending another would be ambiguous.
+func hasConfigFlag(cmd string) bool {
+	for f := range strings.FieldsSeq(cmd) {
+		if f == "--config" || f == "-c" || strings.HasPrefix(f, "--config=") || strings.HasPrefix(f, "-c=") {
+			return true
+		}
+	}
+	return false
+}
+
 // validateCmd renders the validator command for the staged file. A `{file}`
 // placeholder is substituted; otherwise the path is appended as `--config
-// <file>`. The command is prefixed with sudo when the SSH user is not root.
-func validateCmd(cmd, sudo, staged string) string {
+// <file>`. A command that already sets its own --config but has no placeholder is
+// rejected, since a second --config would validate the wrong file. The command is
+// prefixed with sudo when the SSH user is not root.
+func validateCmd(cmd, sudo, staged string) (string, error) {
 	v := strings.TrimSpace(cmd)
-	if strings.Contains(v, "{file}") {
+	switch {
+	case strings.Contains(v, "{file}"):
 		v = strings.ReplaceAll(v, "{file}", shellQuote(staged))
-	} else {
+	case hasConfigFlag(v):
+		return "", fmt.Errorf("validate_cmd sets its own --config; use the {file} placeholder so hl can point it at the staged Caddyfile")
+	default:
 		v = v + " --config " + shellQuote(staged)
 	}
 	if sudo != "" && !strings.HasPrefix(v, "sudo ") {
 		v = sudo + v
 	}
-	return v
+	return v, nil
+}
+
+const validateRCMarker = "__hl_validate_rc:"
+
+// runValidator runs vcmd against the staged file and classifies the outcome.
+// rejected is true only when the validator ran and reported the file invalid; a
+// non-nil error means the validator could not run at all (missing binary, bad
+// flag, sudo/transport failure) — a different problem the user fixes differently.
+// The validator's exit status is captured via a trailing marker so a non-zero
+// exit does not surface as an SSH transport error.
+func runValidator(ctx context.Context, t sshx.Target, vcmd string) (output string, rejected bool, err error) {
+	wrapped := vcmd + "; printf '\\n" + validateRCMarker + "%d\\n' \"$?\""
+	out, err := sshx.Run(ctx, t, wrapped)
+	if err != nil {
+		// The marker never ran: this is a transport/shell failure, not a verdict.
+		return out, false, err
+	}
+	body, rc, ok := extractRC(out)
+	if !ok {
+		return out, false, fmt.Errorf("validator produced no exit status")
+	}
+	switch rc {
+	case 0:
+		return body, false, nil
+	case 126, 127:
+		return body, false, fmt.Errorf("validator command could not run (exit %d) — is it installed on the host and runnable under the SSH user?", rc)
+	default:
+		return body, true, nil
+	}
+}
+
+// extractRC pulls the trailing exit-status marker out of combined output,
+// returning the output without that line, the parsed code, and whether a marker
+// was found.
+func extractRC(out string) (body string, rc int, ok bool) {
+	lines := strings.Split(out, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if rest, found := strings.CutPrefix(line, validateRCMarker); found {
+			if n, err := strconv.Atoi(strings.TrimSpace(rest)); err == nil {
+				body = strings.Join(append(lines[:i], lines[i+1:]...), "\n")
+				return strings.TrimRight(body, "\n"), n, true
+			}
+		}
+	}
+	return out, 0, false
 }
 
 // Validate stages the local Caddyfile to a temp path on the remote host and runs
 // the configured validator against it, leaving the live file untouched, then
 // removes the temp file. It returns the validator's output (the reason on
-// failure) and ErrValidate when the file is rejected. A blank validate_cmd
-// disables the check and returns ("", nil).
+// failure) and ErrValidate when the file is rejected. A failure to run the
+// validator itself is returned as an ordinary error, not ErrValidate. A blank
+// validate_cmd disables the check and returns ("", nil).
 func Validate(ctx context.Context, cfg config.Caddy) (string, error) {
 	remote := cfg.Remote
 	if strings.TrimSpace(remote.ValidateCmd) == "" {
@@ -123,13 +194,20 @@ func Validate(ctx context.Context, cfg config.Caddy) (string, error) {
 		return "", fmt.Errorf("read local %s: %w", cfg.LocalFile, err)
 	}
 	rp := remote.RemotePath
-	staged := rp + ".hldns.new"
+	staged := stagedPath(rp)
+	vcmd, err := validateCmd(remote.ValidateCmd, sudo, staged)
+	if err != nil {
+		return "", err
+	}
 	if out, err := sshx.Run(ctx, t, stageCmd(sudo, rp, staged, content)); err != nil {
 		return out, fmt.Errorf("stage %s: %w", staged, err)
 	}
-	out, verr := sshx.Run(ctx, t, validateCmd(remote.ValidateCmd, sudo, staged))
+	out, rejected, rerr := runValidator(ctx, t, vcmd)
 	_, _ = sshx.Run(ctx, t, fmt.Sprintf("%srm -f %s", sudo, shellQuote(staged)))
-	if verr != nil {
+	if rerr != nil {
+		return out, rerr
+	}
+	if rejected {
 		return out, ErrValidate
 	}
 	return out, nil
@@ -139,11 +217,12 @@ func Validate(ctx context.Context, cfg config.Caddy) (string, error) {
 // restores the previous remote file if the reload fails. The file is written by
 // piping base64 through `tee` rather than SFTP, so a non-root SSH user can
 // elevate with sudo to reach privileged paths like /etc/caddy (passwordless
-// sudo required on the host).
+// sudo required on the host). Writing through the live path with tee preserves
+// its inode, mode, ownership, and any symlink at that path.
 //
-// The new file is first staged beside the live one and validated (unless
-// validate_cmd is blank); a validation failure aborts with ErrValidate and the
-// live config is never touched.
+// When validate_cmd is set, the file is first staged to a per-run temp path and
+// validated there; a rejected file aborts with ErrValidate and the live config
+// is never touched, while a validator that cannot run returns an ordinary error.
 func Deploy(ctx context.Context, cfg config.Caddy) (string, error) {
 	remote := cfg.Remote
 	t, sudo, err := remoteTarget(remote)
@@ -158,27 +237,34 @@ func Deploy(ctx context.Context, cfg config.Caddy) (string, error) {
 
 	rp := remote.RemotePath
 	backup := rp + ".hldns.bak"
-	staged := rp + ".hldns.new"
 
-	// Stage the new file beside the live one; the live Caddyfile stays put until
-	// the staged copy validates.
-	if out, err := sshx.Run(ctx, t, stageCmd(sudo, rp, staged, content)); err != nil {
-		return out, fmt.Errorf("stage %s: %w", staged, err)
-	}
-
-	// Validate the staged file. On failure the live config is never changed.
+	// Validate a staged copy first. The live Caddyfile is never touched until the
+	// staged copy passes; the staged file is then removed.
 	if strings.TrimSpace(remote.ValidateCmd) != "" {
-		if out, err := sshx.Run(ctx, t, validateCmd(remote.ValidateCmd, sudo, staged)); err != nil {
-			_, _ = sshx.Run(ctx, t, fmt.Sprintf("%srm -f %s", sudo, shellQuote(staged)))
+		staged := stagedPath(rp)
+		vcmd, err := validateCmd(remote.ValidateCmd, sudo, staged)
+		if err != nil {
+			return "", err
+		}
+		if out, err := sshx.Run(ctx, t, stageCmd(sudo, rp, staged, content)); err != nil {
+			return out, fmt.Errorf("stage %s: %w", staged, err)
+		}
+		out, rejected, rerr := runValidator(ctx, t, vcmd)
+		_, _ = sshx.Run(ctx, t, fmt.Sprintf("%srm -f %s", sudo, shellQuote(staged)))
+		if rerr != nil {
+			return out, rerr
+		}
+		if rejected {
 			return out, ErrValidate
 		}
 	}
 
-	// Promote: back up the live file, then move the staged copy into place.
+	// Promote: back up the live file, then write the new content through the live
+	// path with tee (preserving the path object), all in one round-trip.
 	promote := fmt.Sprintf(
-		"(%scp -f %s %s 2>/dev/null || true) && %smv -f %s %s",
+		"(%scp -f %s %s 2>/dev/null || true) && %s",
 		sudo, shellQuote(rp), shellQuote(backup),
-		sudo, shellQuote(staged), shellQuote(rp),
+		stageCmd(sudo, rp, rp, content),
 	)
 	if out, err := sshx.Run(ctx, t, promote); err != nil {
 		return out, fmt.Errorf("write %s: %w", rp, err)
