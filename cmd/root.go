@@ -2,6 +2,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/AhmedAburady/hl/internal/config"
@@ -9,6 +10,11 @@ import (
 )
 
 var configPath string
+
+// ErrReported signals that a command already presented its failure to the user
+// in the styled UI format and exited non-zero; the top-level error handler
+// suppresses any further error rendering for it.
+var ErrReported = errors.New("reported")
 
 // Root returns the root command for the CLI.
 func Root() *cobra.Command {
@@ -22,7 +28,7 @@ the Caddyfile and reconciles Technitium DNS to match.`,
 	root.PersistentFlags().StringVarP(&configPath, "config", "c", "",
 		"path to config file (default ~/.config/hl/config.yaml)")
 
-	root.AddCommand(newSyncCmd(), newStatusCmd(), newDNSCmd(), newConfigCmd())
+	root.AddCommand(newSyncCmd(), newValidateCmd(), newStatusCmd(), newDNSCmd(), newConfigCmd())
 	return root
 }
 

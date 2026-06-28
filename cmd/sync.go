@@ -16,11 +16,12 @@ import (
 
 // syncOpts controls the shared deploy + DNS reconcile flow.
 type syncOpts struct {
-	dryRun   bool
-	noDeploy bool
-	noDNS    bool
-	noPrune  bool
-	adopt    bool
+	dryRun     bool
+	noDeploy   bool
+	noDNS      bool
+	noPrune    bool
+	noValidate bool
+	adopt      bool
 }
 
 func newSyncCmd() *cobra.Command {
@@ -45,6 +46,7 @@ and pruning hl-managed records).`,
 	cmd.Flags().BoolVar(&o.noDeploy, "no-deploy", false, "skip the Caddy deploy; reconcile DNS only")
 	cmd.Flags().BoolVar(&o.noDNS, "no-dns", false, "deploy Caddy only; skip DNS reconcile")
 	cmd.Flags().BoolVar(&o.noPrune, "no-prune", false, "do not delete managed DNS records absent from the Caddyfile")
+	cmd.Flags().BoolVar(&o.noValidate, "no-validate", false, "skip validating the Caddyfile on the remote host before deploying")
 	cmd.Flags().BoolVar(&o.adopt, "adopt", false, "overwrite existing records not managed by hl (take ownership)")
 	return cmd
 }
@@ -57,20 +59,38 @@ func runSync(c *cobra.Command, cfg *config.Config, o syncOpts) error {
 		return err
 	}
 
+	// A per-run copy of the Caddy config so --no-validate can disable the remote
+	// check without mutating the cached config.
+	caddyCfg := cfg.Caddy
+	if o.noValidate {
+		caddyCfg.Remote.ValidateCmd = ""
+	}
+
 	if !o.noDeploy {
 		if o.dryRun {
 			out(c, "%s", ui.Info("[dry-run] would deploy %s to %s and reload", cfg.Caddy.LocalFile, cfg.Caddy.Remote.Host))
+			if !o.noValidate && strings.TrimSpace(caddyCfg.Remote.ValidateCmd) != "" {
+				out(c, "%s", ui.Info("[dry-run] run 'hl validate' to check the Caddyfile on the host"))
+			}
 		} else {
 			out(c, "%s", ui.Step("Deploying to %s …", cfg.Caddy.Remote.Host))
-			deployOut, err := caddy.Deploy(c.Context(), cfg.Caddy)
+			deployOut, err := caddy.Deploy(c.Context(), caddyCfg)
 			if err != nil {
+				if errors.Is(err, caddy.ErrValidate) {
+					out(c, "%s", ui.Warn("Caddyfile is invalid — nothing deployed (live config untouched)."))
+					if s := strings.TrimSpace(deployOut); s != "" {
+						out(c, "%s", ui.Detail(s))
+					}
+					return ErrReported
+				}
 				// Surface the remote output — the actual reason the deploy failed.
+				out(c, "%s", ui.Warn("Deploy failed: %v", err))
 				if s := strings.TrimSpace(deployOut); s != "" {
 					out(c, "%s", ui.Detail(s))
 				}
-				return fmt.Errorf("deploy: %w", err)
+				return ErrReported
 			}
-			out(c, "%s", ui.OK("Caddy reloaded."))
+			out(c, "%s", ui.OK("Validated and deployed — Caddy reloaded."))
 			if s := strings.TrimSpace(deployOut); s != "" {
 				out(c, "%s", ui.Detail(s))
 			}
@@ -83,6 +103,52 @@ func runSync(c *cobra.Command, cfg *config.Config, o syncOpts) error {
 		}
 	}
 	return nil
+}
+
+// validatePreview runs the remote Caddyfile validator and reports the result in
+// the styled format, returning ErrReported when the file is rejected. A blank
+// validate_cmd (or --no-validate) is a no-op.
+func validatePreview(c *cobra.Command, caddyCfg config.Caddy) error {
+	if strings.TrimSpace(caddyCfg.Remote.ValidateCmd) == "" {
+		return nil
+	}
+	out(c, "%s", ui.Step("Validating %s on %s …", caddyCfg.LocalFile, caddyCfg.Remote.Host))
+	vout, err := caddy.Validate(c.Context(), caddyCfg)
+	if err != nil {
+		if errors.Is(err, caddy.ErrValidate) {
+			out(c, "%s", ui.Warn("Caddyfile is invalid."))
+			if s := strings.TrimSpace(vout); s != "" {
+				out(c, "%s", ui.Detail(s))
+			}
+			return ErrReported
+		}
+		out(c, "%s", ui.Warn("Could not validate: %v", err))
+		return ErrReported
+	}
+	out(c, "%s", ui.OK("Caddyfile is valid."))
+	return nil
+}
+
+func newValidateCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "validate",
+		Short: "Check the local Caddyfile on the remote host without deploying",
+		Long: `validate stages the local Caddyfile to a temporary path on the Caddy
+host and runs the configured validator (caddy adapt) against it. The live
+configuration is never touched; this only reports whether the file is valid.`,
+		Args: cobra.NoArgs,
+		RunE: func(c *cobra.Command, _ []string) error {
+			cfg, err := loadCfg()
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(cfg.Caddy.Remote.ValidateCmd) == "" {
+				out(c, "%s", ui.Info("validation is disabled (caddy.remote.validate_cmd is empty)"))
+				return nil
+			}
+			return validatePreview(c, cfg.Caddy)
+		},
+	}
 }
 
 // reconcileDNS derives desired records from the Caddyfile content and brings the
