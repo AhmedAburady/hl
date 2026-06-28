@@ -1,8 +1,21 @@
-# hl — homelab Caddy + Technitium DNS CLI
+# hl — your homelab's Caddy + Technitium DNS, from one file
 
-`hl` is a small Go CLI that treats your **local Caddyfile as the single source of
-truth** for both reverse proxies and DNS. Each site block declares its DNS intent
-in a comment directly above it, and one command keeps everything in sync:
+<p align="center">
+  <img src=".github/assets/banner.jpg" alt="hl — homelab Caddy + Technitium DNS" width="100%" />
+</p>
+
+[![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go)](https://go.dev/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/AhmedAburady/hl?include_prereleases)](https://github.com/AhmedAburady/hl/releases)
+
+If you run [Caddy](https://caddyserver.com/) for reverse proxies and
+[Technitium](https://technitium.com/dns/) for DNS, you know the dance: spin up a
+service, edit the Caddyfile, then go poke the DNS server for the matching record.
+Two places, by hand, every single time — and sooner or later they drift.
+
+**hl makes your Caddyfile the single source of truth for both.** Declare a
+record's DNS intent in a comment right above its site block, run one command, and
+the proxy *and* its DNS record come up together:
 
 ```
 # dsm type=CNAME zone=synology.com value=caddy.home.lab.
@@ -14,13 +27,22 @@ dsm.synology.com {
 `hl sync` then:
 
 1. Pushes the Caddyfile to your Caddy host over SSH and reloads Caddy.
-2. Reconciles Technitium DNS so the zone holds exactly the records declared by the
-   annotations — creating, updating, and **pruning** records as the file changes.
+2. Reconciles Technitium DNS so the zone holds exactly the records your
+   annotations declare — creating, updating, and **pruning** as the file changes.
 
-Because the file is the source of truth, hand-edit it freely and re-run `hl sync`;
-`hl status` previews the plan without changing anything. Only records `hl` created
-(tagged via Technitium's per-record comment) are ever modified or deleted — your
-hand-made records are never touched.
+Hand-edit the file whenever you like and re-run `hl sync`; `hl status` previews
+the plan first and changes nothing. And it's careful by default: hl only ever
+touches records *it* created (tagged via Technitium's per-record comment). Your
+hand-made records — and NS/MX/SOA infrastructure — are left strictly alone.
+
+### Why I built it
+
+This started as a scratch for my own itch: running Caddy + Technitium at home, the
+copy-the-hostname-into-two-places chore got old fast, and the two kept falling out
+of sync. If you're on the same stack, it'll save you the same annoyance. It's
+small, it leans on tools you already trust (SSH, your Caddyfile, the Technitium
+API), and it treats your config file the way it deserves — as the truth. PRs and
+issues from fellow homelabbers welcome.
 
 ## Requirements
 
@@ -224,5 +246,10 @@ go fix ./...       # apply safe Go modernizations
 
 Module: `github.com/AhmedAburady/hl`, Go 1.26. Internal packages live
 under `internal/` (`config`, `caddy`, `technitium`, `reconcile`, `sshx`,
-`prompt`); the Cobra command tree is in `cmd/`. See `AGENTS.md` for contributor
+`ui`); the Cobra command tree is in `cmd/`. See `AGENTS.md` for contributor
 guidance.
+
+## License
+
+[MIT](LICENSE) © Ahmed Aburady. Built for homelabbers — fork it, ship it, make it
+yours.
