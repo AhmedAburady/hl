@@ -54,7 +54,11 @@ func runPull(c *cobra.Command, cfg *config.Config, dryRun bool) error {
 	}
 
 	if dryRun {
-		out(c, "%s", ui.Info("[dry-run] local %s differs from remote; would overwrite (previous version backed up)", cfg.Caddy.LocalFile))
+		if caddy.LocalFileExists(cfg.Caddy.LocalFile) {
+			out(c, "%s", ui.Info("[dry-run] local %s differs from remote; would overwrite it (previous version backed up)", cfg.Caddy.LocalFile))
+		} else {
+			out(c, "%s", ui.Info("[dry-run] local %s does not exist; would create it from remote", cfg.Caddy.LocalFile))
+		}
 		return nil
 	}
 
