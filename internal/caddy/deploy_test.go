@@ -86,6 +86,41 @@ func TestExtractRC(t *testing.T) {
 	}
 }
 
+func TestContentSHA256MatchesSha256sum(t *testing.T) {
+	// Known vector: sha256sum of "hello\n" (the trailing newline is significant).
+	if got := contentSHA256("hello\n"); got != "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03" {
+		t.Errorf("contentSHA256 = %q, want sha256sum of \"hello\\n\"", got)
+	}
+	if contentSHA256("a") == contentSHA256("b") {
+		t.Error("distinct content produced the same hash")
+	}
+}
+
+func TestReadAndSHACmds(t *testing.T) {
+	if got := readRemoteCmd("", "/etc/caddy/Caddyfile"); got != `cat '/etc/caddy/Caddyfile'` {
+		t.Errorf("readRemoteCmd root = %q", got)
+	}
+	if got := readRemoteCmd("sudo ", "/etc/caddy/Caddyfile"); got != `sudo cat '/etc/caddy/Caddyfile'` {
+		t.Errorf("readRemoteCmd sudo = %q", got)
+	}
+	if got := remoteSHACmd("sudo ", "/etc/caddy/Caddyfile"); got != `sudo sha256sum '/etc/caddy/Caddyfile' 2>/dev/null` {
+		t.Errorf("remoteSHACmd = %q", got)
+	}
+}
+
+func TestParseSHA(t *testing.T) {
+	sum, ok := parseSHA("5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03  /etc/caddy/Caddyfile\n")
+	if !ok || sum != "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03" {
+		t.Fatalf("parseSHA = %q ok=%v, want the hash field", sum, ok)
+	}
+	if _, ok := parseSHA(""); ok {
+		t.Error("parseSHA reported ok on empty output (missing file)")
+	}
+	if _, ok := parseSHA("   \n"); ok {
+		t.Error("parseSHA reported ok on whitespace-only output")
+	}
+}
+
 func TestExpandTilde(t *testing.T) {
 	if got := expandTilde("/abs/path"); got != "/abs/path" {
 		t.Errorf("absolute path changed: %q", got)

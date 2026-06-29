@@ -22,6 +22,7 @@ type syncOpts struct {
 	noPrune    bool
 	noValidate bool
 	adopt      bool
+	force      bool
 }
 
 func newSyncCmd() *cobra.Command {
@@ -48,6 +49,7 @@ and pruning hl-managed records).`,
 	cmd.Flags().BoolVar(&o.noPrune, "no-prune", false, "do not delete managed DNS records absent from the Caddyfile")
 	cmd.Flags().BoolVar(&o.noValidate, "no-validate", false, "skip validating the Caddyfile on the remote host before deploying")
 	cmd.Flags().BoolVar(&o.adopt, "adopt", false, "overwrite existing records not managed by hl (take ownership)")
+	cmd.Flags().BoolVar(&o.force, "force", false, "deploy and reload even when the remote Caddyfile already matches (also revives a stopped Caddy)")
 	return cmd
 }
 
@@ -74,7 +76,7 @@ func runSync(c *cobra.Command, cfg *config.Config, o syncOpts) error {
 			}
 		} else {
 			out(c, "%s", ui.Step("Deploying to %s …", cfg.Caddy.Remote.Host))
-			deployOut, err := caddy.Deploy(c.Context(), caddyCfg)
+			deployOut, changed, err := caddy.Deploy(c.Context(), caddyCfg, o.force)
 			if err != nil {
 				if errors.Is(err, caddy.ErrValidate) {
 					out(c, "%s", ui.Warn("Caddyfile is invalid — nothing deployed (live config untouched)."))
@@ -90,9 +92,13 @@ func runSync(c *cobra.Command, cfg *config.Config, o syncOpts) error {
 				}
 				return ErrReported
 			}
-			out(c, "%s", ui.OK("Validated and deployed — Caddy reloaded."))
-			if s := strings.TrimSpace(deployOut); s != "" {
-				out(c, "%s", ui.Detail(s))
+			if !changed {
+				out(c, "%s", ui.OK("Caddy already up to date — nothing to deploy (use --force to redeploy)."))
+			} else {
+				out(c, "%s", ui.OK("Validated and deployed — Caddy reloaded."))
+				if s := strings.TrimSpace(deployOut); s != "" {
+					out(c, "%s", ui.Detail(s))
+				}
 			}
 		}
 	}
