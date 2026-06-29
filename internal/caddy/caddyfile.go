@@ -144,18 +144,18 @@ func commentGroupAbove(lines []string, openLine int) []string {
 	return lines[start:openLine]
 }
 
-// blockUpstream returns the argument of a top-level single-line reverse_proxy
-// directive in the block, or "" if none (or block-form).
 func blockUpstream(lines []string, b siteBlock) string {
 	relDepth := 0
 	for i := b.openLine + 1; i < b.closeLine; i++ {
 		braces := braceRunes(lines[i])
 		if relDepth == 0 {
 			stripped := stripComment(lines[i])
-			if firstField(stripped) == "reverse_proxy" && !endsWithOpenBrace(stripped) {
-				fields := strings.Fields(stripped)
-				if len(fields) >= 2 {
+			if firstField(stripped) == "reverse_proxy" {
+				if fields := strings.Fields(stripped); len(fields) >= 2 && fields[1] != "{" {
 					return fields[1]
+				}
+				if endsWithOpenBrace(stripped) {
+					return firstToUpstream(lines, i+1, b.closeLine)
 				}
 				return ""
 			}
@@ -163,6 +163,22 @@ func blockUpstream(lines []string, b siteBlock) string {
 		relDepth += countBraces(braces)
 		if relDepth < 0 {
 			relDepth = 0
+		}
+	}
+	return ""
+}
+
+func firstToUpstream(lines []string, start, end int) string {
+	depth := 0
+	for i := start; i < end; i++ {
+		stripped := stripComment(lines[i])
+		if depth == 0 && firstField(stripped) == "to" {
+			if fields := strings.Fields(stripped); len(fields) >= 2 {
+				return fields[1]
+			}
+		}
+		if depth += countBraces(braceRunes(lines[i])); depth < 0 {
+			return ""
 		}
 	}
 	return ""

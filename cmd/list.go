@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -13,28 +15,46 @@ import (
 )
 
 func newListCmd() *cobra.Command {
-	var noRemote bool
+	var (
+		noRemote bool
+		zone     string
+		format   string
+	)
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "Compare the local Caddyfile, Technitium DNS, and the deployed Caddyfile",
-		Long: `list compares the three places a managed host can live — the local
-Caddyfile (L), the records in Technitium (DNS), and the Caddyfile deployed on the
-Caddy host (CA) — and prints a per-host matrix of where they agree or drift. It
-covers only the records hl manages and changes nothing.`,
+		Short: "List managed DNS records grouped by zone, with drift across local, DNS, and the deployed Caddy",
+		Long: `list prints the managed DNS records grouped by zone — record name, value,
+and reverse-proxy address — plus where each agrees or drifts: declared locally
+(L), present in Technitium (DNS), and on the deployed Caddy host (RE). It covers
+only the records hl manages and changes nothing.`,
 		Args: cobra.NoArgs,
 		RunE: func(c *cobra.Command, _ []string) error {
 			cfg, err := loadCfg()
 			if err != nil {
 				return err
 			}
-			return runList(c, cfg, noRemote)
+			return runList(c, cfg, noRemote, zone, format)
 		},
 	}
-	cmd.Flags().BoolVar(&noRemote, "no-remote", false, "skip the SSH fetch of the remote Caddyfile (CA column shows ?)")
+	cmd.Flags().BoolVar(&noRemote, "no-remote", false, "skip the SSH fetch of the remote Caddyfile (RE column shows ?)")
+	cmd.Flags().StringVar(&zone, "zone", "", "show only records in this DNS zone (e.g. example.com)")
+	cmd.Flags().StringVar(&format, "format", "table", "output format: table or json")
 	return cmd
 }
 
-func runList(c *cobra.Command, cfg *config.Config, noRemote bool) error {
+func runList(c *cobra.Command, cfg *config.Config, noRemote bool, zone, format string) error {
+	if format != "table" && format != "json" {
+		return fmt.Errorf("invalid --format %q (want table or json)", format)
+	}
+	jsonOut := format == "json"
+	note := func(s string) {
+		if jsonOut {
+			fmt.Fprintln(c.ErrOrStderr(), s)
+		} else {
+			out(c, "%s", s)
+		}
+	}
+
 	content, err := caddy.ReadLocalFile(cfg.Caddy.LocalFile)
 	if err != nil {
 		return err
@@ -45,18 +65,17 @@ func runList(c *cobra.Command, cfg *config.Config, noRemote bool) error {
 	}
 
 	var (
-		desired   []reconcile.Desired
 		plan      reconcile.Plan
 		dnsSkip   bool
 		dnsReason string
 		dnsErr    error
 	)
 	_ = ui.WithSpinner(c.Context(), "reading DNS records…", func(context.Context) error {
-		desired, plan, _, _, dnsSkip, dnsReason, dnsErr = computeDNSPlan(c, cfg, content, false, false)
+		_, plan, _, _, dnsSkip, dnsReason, dnsErr = computeDNSPlan(c, cfg, content, false, false)
 		return dnsErr
 	})
 	if dnsErr != nil {
-		out(c, "%s", ui.Warn("DNS: could not build plan: %v", dnsErr))
+		note(ui.Warn("DNS: could not build plan: %v", dnsErr))
 	}
 	dnsKnown := dnsErr == nil && !dnsSkip
 
@@ -71,42 +90,86 @@ func runList(c *cobra.Command, cfg *config.Config, noRemote bool) error {
 		})
 		switch {
 		case rerr != nil:
-			out(c, "%s", ui.Warn("CA: could not read remote Caddyfile: %v", rerr))
+			note(ui.Warn("RE: could not read remote Caddyfile: %v", rerr))
 		default:
 			rs, perr := caddy.ParseSites(rc)
 			if perr != nil {
-				out(c, "%s", ui.Warn("CA: could not parse remote Caddyfile: %v", perr))
+				note(ui.Warn("RE: could not parse remote Caddyfile: %v", perr))
 			} else {
 				remoteSites, remoteOK = rs, true
 			}
 		}
 	}
 
-	rows := buildStatusRows(localSites, remoteSites, plan, remoteOK, dnsKnown)
+	rows := buildRecordRows(localSites, remoteSites, plan, remoteOK, dnsKnown)
+	if zone != "" {
+		want := reconcile.NameKey(zone)
+		kept := rows[:0]
+		for _, r := range rows {
+			if reconcile.NameKey(r.Zone) == want {
+				kept = append(kept, r)
+			}
+		}
+		rows = kept
+	}
+
+	if jsonOut {
+		return writeRecordsJSON(c, rows)
+	}
+
 	if len(rows) == 0 {
-		out(c, "%s", ui.Info("No hosts in %s", cfg.Caddy.LocalFile))
+		if zone != "" {
+			out(c, "%s", ui.Info("No managed records in zone %s", zone))
+		} else {
+			out(c, "%s", ui.Info("No managed records in %s", cfg.Caddy.LocalFile))
+		}
 	} else {
-		out(c, "%s", ui.Heading("Hosts"))
-		out(c, "%s", ui.RenderStatus(rows))
-		if leg := ui.StatusLegend(rows); leg != "" {
+		out(c, "%s", ui.RenderRecords(rows))
+		if leg := ui.RecordLegend(rows); leg != "" {
+			out(c, "")
 			out(c, "%s", leg)
 		}
 	}
 
-	switch {
-	case dnsErr != nil:
-	case dnsSkip:
+	if dnsSkip {
 		out(c, "")
 		out(c, "%s", ui.Info("DNS: %s", dnsReason))
-	default:
-		out(c, "")
-		printDNSPlan(c, plan, len(desired), true)
 	}
 
 	out(c, "")
 	out(c, "%s", ui.Info("%-3s = %s", "L", cfg.Caddy.LocalFile))
 	out(c, "%s", ui.Info("%-3s = %s", "DNS", cfg.Technitium.URL))
-	out(c, "%s", ui.Info("%-3s = %s", "CA", cfg.Caddy.Remote.Host))
+	out(c, "%s", ui.Info("%-3s = %s", "RE", cfg.Caddy.Remote.Host))
+	return nil
+}
+
+func writeRecordsJSON(c *cobra.Command, rows []ui.RecordRow) error {
+	type record struct {
+		Zone    string `json:"zone"`
+		Record  string `json:"record"`
+		Value   string `json:"value"`
+		Address string `json:"address"`
+		Local   string `json:"local"`
+		DNS     string `json:"dns"`
+		Remote  string `json:"remote"`
+	}
+	items := make([]record, 0, len(rows))
+	for _, r := range rows {
+		items = append(items, record{
+			Zone:    r.Zone,
+			Record:  r.Record,
+			Value:   r.Value,
+			Address: r.Proxy,
+			Local:   r.Local.Label(),
+			DNS:     r.DNS.Label(),
+			Remote:  r.Remote.Label(),
+		})
+	}
+	b, err := json.MarshalIndent(items, "", "  ")
+	if err != nil {
+		return err
+	}
+	out(c, "%s", string(b))
 	return nil
 }
 
@@ -114,109 +177,95 @@ func isWildcard(host string) bool {
 	return strings.Contains(host, "*")
 }
 
-func buildStatusRows(local, remote []caddy.Site, plan reconcile.Plan, remoteOK, dnsKnown bool) []ui.StatusRow {
+func buildRecordRows(local, remote []caddy.Site, plan reconcile.Plan, remoteOK, dnsKnown bool) []ui.RecordRow {
 	create := actionNameSet(plan.Create)
 	update := actionNameSet(plan.Update)
 	conflict := actionNameSet(plan.Conflict)
 
-	type agg struct {
-		host     string
-		inLocal  bool
-		inRemote bool
-		hasDNS   bool
-		fqdn     string
-		orphan   bool
-	}
-	order := []string{}
-	rows := map[string]*agg{}
-	get := func(key, display string) *agg {
-		a, ok := rows[key]
-		if !ok {
-			a = &agg{host: display}
-			rows[key] = a
-			order = append(order, key)
-		}
-		return a
-	}
-
-	for _, s := range local {
-		if isWildcard(s.Host) {
-			continue
-		}
-		a := get(reconcile.NameKey(s.Host), s.Host)
-		a.inLocal = true
-		if s.DNS.Present {
-			a.hasDNS = true
-			if d, err := reconcile.Resolve(s.DNS); err == nil {
-				a.fqdn = d.Domain
-			} else {
-				a.fqdn = s.Host
-			}
-		}
-	}
+	remoteHosts := map[string]bool{}
 	for _, s := range remote {
 		if isWildcard(s.Host) {
 			continue
 		}
-		get(reconcile.NameKey(s.Host), s.Host).inRemote = true
+		remoteHosts[reconcile.NameKey(s.Host)] = true
 	}
-	for _, ac := range plan.Delete {
-		if isWildcard(ac.Domain) {
+
+	dnsMark := func(fqdn string) ui.Mark {
+		if !dnsKnown {
+			return ui.MarkUnknown
+		}
+		switch k := reconcile.NameKey(fqdn); {
+		case conflict[k]:
+			return ui.MarkConflict
+		case create[k]:
+			return ui.MarkMissing
+		case update[k]:
+			return ui.MarkDrift
+		default:
+			return ui.MarkOK
+		}
+	}
+
+	seen := map[string]bool{}
+	var rows []ui.RecordRow
+
+	for _, s := range local {
+		if isWildcard(s.Host) || !s.DNS.Present {
 			continue
 		}
-		get(reconcile.NameKey(ac.Domain), ac.Domain).orphan = true
-	}
-
-	sort.Strings(order)
-	out := make([]ui.StatusRow, 0, len(order))
-	for _, key := range order {
-		a := rows[key]
-		row := ui.StatusRow{Host: a.host}
-
-		if a.inLocal {
-			row.Local = ui.MarkOK
-		} else {
-			row.Local = ui.MarkNA
+		d, err := reconcile.Resolve(s.DNS)
+		if err != nil {
+			continue
 		}
+		seen[reconcile.NameKey(d.Domain)] = true
 
+		rem := ui.MarkNA
 		switch {
 		case !remoteOK:
-			row.Caddy = ui.MarkUnknown
-		case a.inRemote:
-			row.Caddy = ui.MarkOK
-		case a.inLocal:
-			row.Caddy = ui.MarkMissing
+			rem = ui.MarkUnknown
+		case remoteHosts[reconcile.NameKey(s.Host)]:
+			rem = ui.MarkOK
 		default:
-			row.Caddy = ui.MarkNA
+			rem = ui.MarkMissing
 		}
 
-		switch {
-		case a.orphan:
-			if dnsKnown {
-				row.DNS = ui.MarkMissing
-			} else {
-				row.DNS = ui.MarkUnknown
-			}
-		case !a.hasDNS:
-			row.DNS = ui.MarkNA
-		case !dnsKnown:
-			row.DNS = ui.MarkUnknown
-		default:
-			fk := reconcile.NameKey(a.fqdn)
-			switch {
-			case conflict[fk]:
-				row.DNS = ui.MarkConflict
-			case create[fk]:
-				row.DNS = ui.MarkMissing
-			case update[fk]:
-				row.DNS = ui.MarkDrift
-			default:
-				row.DNS = ui.MarkOK
-			}
-		}
-		out = append(out, row)
+		rows = append(rows, ui.RecordRow{
+			Zone:   d.Zone,
+			Record: d.Domain,
+			Value:  d.Value,
+			Proxy:  s.Upstream,
+			Local:  ui.MarkOK,
+			DNS:    dnsMark(d.Domain),
+			Remote: rem,
+		})
 	}
-	return out
+
+	for _, a := range plan.Delete {
+		if isWildcard(a.Domain) || seen[reconcile.NameKey(a.Domain)] {
+			continue
+		}
+		seen[reconcile.NameKey(a.Domain)] = true
+		dns := ui.MarkOK
+		if !dnsKnown {
+			dns = ui.MarkUnknown
+		}
+		rows = append(rows, ui.RecordRow{
+			Zone:   a.Zone,
+			Record: a.Domain,
+			Value:  a.Value,
+			Local:  ui.MarkNA,
+			DNS:    dns,
+			Remote: ui.MarkNA,
+		})
+	}
+
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Zone != rows[j].Zone {
+			return rows[i].Zone < rows[j].Zone
+		}
+		return reconcile.NameKey(rows[i].Record) < reconcile.NameKey(rows[j].Record)
+	})
+	return rows
 }
 
 func actionNameSet(as []reconcile.Action) map[string]bool {

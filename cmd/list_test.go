@@ -9,129 +9,115 @@ import (
 	"github.com/AhmedAburady/hl/internal/ui"
 )
 
-func site(host, name, zone string, present bool) caddy.Site {
-	s := caddy.Site{Host: host}
+func site(host, name, zone, upstream string, present bool) caddy.Site {
+	s := caddy.Site{Host: host, Upstream: upstream}
 	if present {
 		s.DNS = caddy.DNSAnnotation{Name: name, Zone: zone, Value: "1.2.3.4", Present: true}
 	}
 	return s
 }
 
-func action(domain string) reconcile.Action {
-	return reconcile.Action{Domain: domain, Type: technitium.TypeA, Value: "1.2.3.4"}
+func action(domain, zone string) reconcile.Action {
+	return reconcile.Action{Domain: domain, Zone: zone, Type: technitium.TypeA, Value: "9.9.9.9"}
 }
 
-func rowFor(rows []ui.StatusRow, host string) ui.StatusRow {
+func rowFor(rows []ui.RecordRow, record string) (ui.RecordRow, bool) {
 	for _, r := range rows {
-		if r.Host == host {
-			return r
+		if r.Record == record {
+			return r, true
 		}
 	}
-	return ui.StatusRow{}
+	return ui.RecordRow{}, false
 }
 
-func TestBuildStatusRows(t *testing.T) {
+func TestBuildRecordRows(t *testing.T) {
 	local := []caddy.Site{
-		site("synced.example.com", "synced", "example.com", true),
-		site("missing.example.com", "missing", "example.com", true),
-		site("drift.example.com", "drift", "example.com", true),
-		site("conflict.example.com", "conflict", "example.com", true),
-		site("undeployed.example.com", "undeployed", "example.com", true),
-		site("nodns.example.com", "", "", false),
+		site("synced.example.com", "synced", "example.com", "10.0.0.1:8080", true),
+		site("missing.example.com", "missing", "example.com", "10.0.0.2:8080", true),
+		site("drift.example.com", "drift", "example.com", "10.0.0.3:8080", true),
+		site("conflict.example.com", "conflict", "example.com", "10.0.0.4:8080", true),
+		site("undeployed.example.com", "undeployed", "example.com", "10.0.0.5:8080", true),
+		site("nodns.example.com", "", "", "10.0.0.6:8080", false),
+		site("*.example.com", "", "", "", false),
 	}
 	remote := []caddy.Site{
-		site("synced.example.com", "synced", "example.com", true),
-		site("missing.example.com", "missing", "example.com", true),
-		site("drift.example.com", "drift", "example.com", true),
-		site("conflict.example.com", "conflict", "example.com", true),
-		site("nodns.example.com", "", "", false),
-		site("remoteonly.example.com", "remoteonly", "example.com", true),
+		site("synced.example.com", "synced", "example.com", "10.0.0.1:8080", true),
+		site("missing.example.com", "missing", "example.com", "10.0.0.2:8080", true),
+		site("drift.example.com", "drift", "example.com", "10.0.0.3:8080", true),
+		site("conflict.example.com", "conflict", "example.com", "10.0.0.4:8080", true),
 	}
 	plan := reconcile.Plan{
-		Create:   []reconcile.Action{action("missing.example.com")},
-		Update:   []reconcile.Action{action("drift.example.com")},
-		Delete:   []reconcile.Action{action("orphan.example.com")},
-		Conflict: []reconcile.Action{action("conflict.example.com")},
+		Create:   []reconcile.Action{action("missing.example.com", "example.com")},
+		Update:   []reconcile.Action{action("drift.example.com", "example.com")},
+		Delete:   []reconcile.Action{action("orphan.example.com", "example.com")},
+		Conflict: []reconcile.Action{action("conflict.example.com", "example.com")},
 	}
 
-	rows := buildStatusRows(local, remote, plan, true, true)
+	rows := buildRecordRows(local, remote, plan, true, true)
 
 	cases := []struct {
-		host              string
-		local, dns, caddy ui.Mark
+		record, value, proxy string
+		local, dns, remote   ui.Mark
 	}{
-		{"synced.example.com", ui.MarkOK, ui.MarkOK, ui.MarkOK},
-		{"missing.example.com", ui.MarkOK, ui.MarkMissing, ui.MarkOK},
-		{"drift.example.com", ui.MarkOK, ui.MarkDrift, ui.MarkOK},
-		{"conflict.example.com", ui.MarkOK, ui.MarkConflict, ui.MarkOK},
-		{"undeployed.example.com", ui.MarkOK, ui.MarkOK, ui.MarkMissing},
-		{"nodns.example.com", ui.MarkOK, ui.MarkNA, ui.MarkOK},
-		{"remoteonly.example.com", ui.MarkNA, ui.MarkNA, ui.MarkOK},
-		{"orphan.example.com", ui.MarkNA, ui.MarkMissing, ui.MarkNA},
+		{"synced.example.com", "1.2.3.4", "10.0.0.1:8080", ui.MarkOK, ui.MarkOK, ui.MarkOK},
+		{"missing.example.com", "1.2.3.4", "10.0.0.2:8080", ui.MarkOK, ui.MarkMissing, ui.MarkOK},
+		{"drift.example.com", "1.2.3.4", "10.0.0.3:8080", ui.MarkOK, ui.MarkDrift, ui.MarkOK},
+		{"conflict.example.com", "1.2.3.4", "10.0.0.4:8080", ui.MarkOK, ui.MarkConflict, ui.MarkOK},
+		{"undeployed.example.com", "1.2.3.4", "10.0.0.5:8080", ui.MarkOK, ui.MarkOK, ui.MarkMissing},
+		{"orphan.example.com", "9.9.9.9", "", ui.MarkNA, ui.MarkOK, ui.MarkNA},
 	}
 	for _, tc := range cases {
-		r := rowFor(rows, tc.host)
-		if r.Host != tc.host {
-			t.Errorf("%s: row not found", tc.host)
+		r, ok := rowFor(rows, tc.record)
+		if !ok {
+			t.Errorf("%s: row not found", tc.record)
 			continue
 		}
-		if r.Local != tc.local || r.DNS != tc.dns || r.Caddy != tc.caddy {
-			t.Errorf("%s: got LOCAL=%v DNS=%v CADDY=%v; want LOCAL=%v DNS=%v CADDY=%v",
-				tc.host, r.Local, r.DNS, r.Caddy, tc.local, tc.dns, tc.caddy)
+		if r.Value != tc.value || r.Proxy != tc.proxy || r.Local != tc.local || r.DNS != tc.dns || r.Remote != tc.remote {
+			t.Errorf("%s: got value=%q proxy=%q L=%v DNS=%v RE=%v; want value=%q proxy=%q L=%v DNS=%v RE=%v",
+				tc.record, r.Value, r.Proxy, r.Local, r.DNS, r.Remote, tc.value, tc.proxy, tc.local, tc.dns, tc.remote)
 		}
 	}
 
-	for i := 1; i < len(rows); i++ {
-		if reconcile.NameKey(rows[i-1].Host) > reconcile.NameKey(rows[i].Host) {
-			t.Errorf("rows not sorted: %q before %q", rows[i-1].Host, rows[i].Host)
-		}
-	}
-}
-
-func TestBuildStatusRowsSkipsWildcards(t *testing.T) {
-	local := []caddy.Site{
-		site("*.example.com", "", "", false),
-		site("real.example.com", "real", "example.com", true),
-	}
-	remote := []caddy.Site{
-		site("*.example.com", "", "", false),
-		site("real.example.com", "real", "example.com", true),
-	}
-	plan := reconcile.Plan{Delete: []reconcile.Action{action("*.example.com")}}
-
-	rows := buildStatusRows(local, remote, plan, true, true)
-
-	if len(rows) != 1 {
-		t.Fatalf("expected only the non-wildcard host, got %d rows: %v", len(rows), rows)
-	}
-	if rows[0].Host != "real.example.com" {
-		t.Errorf("expected real.example.com, got %q", rows[0].Host)
+	if _, ok := rowFor(rows, "nodns.example.com"); ok {
+		t.Error("host without a DNS annotation should not appear")
 	}
 	for _, r := range rows {
-		if isWildcard(r.Host) {
-			t.Errorf("wildcard host leaked into rows: %q", r.Host)
+		if isWildcard(r.Record) {
+			t.Errorf("wildcard leaked into rows: %q", r.Record)
 		}
 	}
 }
 
-func TestBuildStatusRowsRemoteUnknown(t *testing.T) {
-	local := []caddy.Site{site("a.example.com", "a", "example.com", true)}
-	rows := buildStatusRows(local, nil, reconcile.Plan{}, false, true)
-	if got := rowFor(rows, "a.example.com").Caddy; got != ui.MarkUnknown {
-		t.Errorf("CADDY with remoteOK=false: got %v, want MarkUnknown", got)
+func TestBuildRecordRowsGroupedByZone(t *testing.T) {
+	local := []caddy.Site{
+		site("b.zeta.com", "b", "zeta.com", "10.0.0.1:1", true),
+		site("a.alpha.com", "a", "alpha.com", "10.0.0.2:1", true),
+		site("c.alpha.com", "c", "alpha.com", "10.0.0.3:1", true),
+	}
+	rows := buildRecordRows(local, nil, reconcile.Plan{}, true, true)
+	want := []string{"a.alpha.com", "c.alpha.com", "b.zeta.com"}
+	if len(rows) != len(want) {
+		t.Fatalf("got %d rows, want %d", len(rows), len(want))
+	}
+	for i, w := range want {
+		if rows[i].Record != w {
+			t.Errorf("row %d: got %q, want %q (zones must sort, then records)", i, rows[i].Record, w)
+		}
 	}
 }
 
-func TestBuildStatusRowsDNSUnknown(t *testing.T) {
-	local := []caddy.Site{
-		site("a.example.com", "a", "example.com", true),
-		site("plain.example.com", "", "", false),
+func TestBuildRecordRowsRemoteUnknown(t *testing.T) {
+	local := []caddy.Site{site("a.example.com", "a", "example.com", "10.0.0.1:1", true)}
+	rows := buildRecordRows(local, nil, reconcile.Plan{}, false, true)
+	if r, ok := rowFor(rows, "a.example.com"); !ok || r.Remote != ui.MarkUnknown {
+		t.Errorf("RE with remoteOK=false: got %v, want MarkUnknown", r.Remote)
 	}
-	rows := buildStatusRows(local, nil, reconcile.Plan{}, true, false)
-	if got := rowFor(rows, "a.example.com").DNS; got != ui.MarkUnknown {
-		t.Errorf("DNS with dnsKnown=false: got %v, want MarkUnknown", got)
-	}
-	if got := rowFor(rows, "plain.example.com").DNS; got != ui.MarkNA {
-		t.Errorf("DNS for no-intent host: got %v, want MarkNA", got)
+}
+
+func TestBuildRecordRowsDNSUnknown(t *testing.T) {
+	local := []caddy.Site{site("a.example.com", "a", "example.com", "10.0.0.1:1", true)}
+	rows := buildRecordRows(local, nil, reconcile.Plan{}, true, false)
+	if r, ok := rowFor(rows, "a.example.com"); !ok || r.DNS != ui.MarkUnknown {
+		t.Errorf("DNS with dnsKnown=false: got %v, want MarkUnknown", r.DNS)
 	}
 }

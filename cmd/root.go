@@ -4,6 +4,7 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/AhmedAburady/hl/internal/config"
@@ -23,13 +24,9 @@ func Root() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "hl",
 		Short: "Manage homelab Caddy reverse proxies and Technitium DNS records",
-		Long: `hl treats the local Caddyfile as the single source of truth. Each site
-block declares its DNS intent in a comment directly above it; 'hl sync' deploys
-the Caddyfile and reconciles Technitium DNS to match.`,
 	}
 	root.PersistentFlags().StringVarP(&configPath, "config", "c", "",
 		"path to config file (default ~/.config/hl/config.yaml)")
-	root.SetOut(colorprofile.NewWriter(os.Stdout, os.Environ()))
 
 	root.AddCommand(newSyncCmd(), newPullCmd(), newValidateCmd(), newStatusCmd(), newListCmd(), newConfigCmd())
 	return root
@@ -49,6 +46,12 @@ func loadCfg() (*config.Config, error) {
 	return c, nil
 }
 
+var stdoutWriter io.Writer = colorprofile.NewWriter(os.Stdout, os.Environ())
+
 func out(cmd *cobra.Command, format string, args ...any) {
-	fmt.Fprintf(cmd.OutOrStdout(), format+"\n", args...)
+	w := cmd.OutOrStdout()
+	if w == os.Stdout {
+		w = stdoutWriter
+	}
+	fmt.Fprintf(w, format+"\n", args...)
 }

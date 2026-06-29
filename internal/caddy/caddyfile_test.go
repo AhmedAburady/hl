@@ -157,6 +157,31 @@ func TestParseSites_HostsAndUpstreams(t *testing.T) {
 	}
 }
 
+func TestParseSites_UpstreamForms(t *testing.T) {
+	cases := map[string]string{
+		"bare":       "a.home.lab {\n\treverse_proxy 10.0.0.1:80\n}\n",
+		"trailing {": "a.home.lab {\n\treverse_proxy 10.0.0.1:80 {\n\t\theader_up Host {host}\n\t}\n}\n",
+		"block to":   "a.home.lab {\n\treverse_proxy {\n\t\tto 10.0.0.1:80\n\t}\n}\n",
+		"scheme":     "a.home.lab {\n\treverse_proxy http://10.0.0.1:80\n}\n",
+	}
+	for name, content := range cases {
+		sites, err := ParseSites(content)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if len(sites) != 1 {
+			t.Fatalf("%s: got %d sites", name, len(sites))
+		}
+		want := "10.0.0.1:80"
+		if name == "scheme" {
+			want = "http://10.0.0.1:80"
+		}
+		if sites[0].Upstream != want {
+			t.Errorf("%s: upstream = %q, want %q", name, sites[0].Upstream, want)
+		}
+	}
+}
+
 func TestParseSites_IgnoresNestedBlocks(t *testing.T) {
 	content := "app.home.lab {\n\thandle /api/* {\n\t\treverse_proxy http://10.0.0.1:80\n\t}\n}\n"
 	sites, err := ParseSites(content)

@@ -22,22 +22,25 @@ import (
 var stdoutIsTTY = term.IsTerminal(int(os.Stdout.Fd()))
 
 var (
-	accent = lipgloss.Color("63")
-	green  = lipgloss.Color("42")
-	yellow = lipgloss.Color("214")
-	orange = lipgloss.Color("208")
-	red    = lipgloss.Color("203")
-	blue   = lipgloss.Color("39")
-	muted  = lipgloss.Color("243")
+	accent = lipgloss.Color("#7D56F4")
+	green  = lipgloss.Color("#00ff87")
+	cyan   = lipgloss.Color("#00d7ff")
+	yellow = lipgloss.Color("#ffff00")
+	pink   = lipgloss.Color("#FF79C6")
+	orange = lipgloss.Color("#FFB86C")
+	blue   = lipgloss.Color("#8BE9FD")
+	muted  = lipgloss.Color("#626262")
+	text   = lipgloss.Color("#cccccc")
 
 	headingStyle = lipgloss.NewStyle().Bold(true).Foreground(accent)
+	accentStyle  = lipgloss.NewStyle().Foreground(accent)
 	successStyle = lipgloss.NewStyle().Foreground(green)
 	warnStyle    = lipgloss.NewStyle().Foreground(yellow)
 	mutedStyle   = lipgloss.NewStyle().Foreground(muted)
 
 	createStyle   = lipgloss.NewStyle().Bold(true).Foreground(green)
 	updateStyle   = lipgloss.NewStyle().Bold(true).Foreground(yellow)
-	deleteStyle   = lipgloss.NewStyle().Bold(true).Foreground(red)
+	deleteStyle   = lipgloss.NewStyle().Bold(true).Foreground(pink)
 	conflictStyle = lipgloss.NewStyle().Bold(true).Foreground(orange)
 
 	borderStyle     = lipgloss.NewStyle().Foreground(muted)
@@ -62,7 +65,7 @@ func Warn(format string, a ...any) string {
 func CheckLine(label string, width int, ok bool, reason string) string {
 	mark := successStyle.Render("OK")
 	if !ok {
-		mark = lipgloss.NewStyle().Foreground(red).Render("FAIL")
+		mark = lipgloss.NewStyle().Foreground(pink).Render("FAIL")
 	}
 	line := fmt.Sprintf("%-*s [%s]", width, label, mark)
 	if !ok && reason != "" {
@@ -149,12 +152,31 @@ func (m Mark) glyph() string {
 	}
 }
 
+func (m Mark) Label() string {
+	switch m {
+	case MarkOK:
+		return "ok"
+	case MarkMissing:
+		return "missing"
+	case MarkDrift:
+		return "drift"
+	case MarkConflict:
+		return "conflict"
+	case MarkNA:
+		return "na"
+	case MarkUnknown:
+		return "unknown"
+	default:
+		return ""
+	}
+}
+
 func (m Mark) color() color.Color {
 	switch m {
 	case MarkOK:
 		return green
 	case MarkMissing:
-		return red
+		return pink
 	case MarkDrift:
 		return yellow
 	case MarkConflict:
@@ -168,9 +190,10 @@ func (m Mark) style() lipgloss.Style {
 	return cellStyle.Align(lipgloss.Center).Foreground(m.color())
 }
 
-type StatusRow struct {
-	Host              string
-	Local, DNS, Caddy Mark
+type RecordRow struct {
+	Zone                 string
+	Record, Value, Proxy string
+	Local, DNS, Remote   Mark
 }
 
 func termWidth() int {
@@ -198,34 +221,76 @@ func renderTable(headers []string, rows [][]string, style func(row, col int) lip
 	return s
 }
 
-func RenderStatus(rows []StatusRow) string {
-	trows := make([][]string, len(rows))
-	for i, r := range rows {
-		trows[i] = []string{strconv.Itoa(i + 1), r.Host, r.Local.glyph(), r.DNS.glyph(), r.Caddy.glyph()}
-	}
-	style := func(r, c int) lipgloss.Style {
-		switch {
-		case r == table.HeaderRow:
-			return headerCellStyle
-		case c == 2:
-			return rows[r].Local.style()
-		case c == 3:
-			return rows[r].DNS.style()
-		case c == 4:
-			return rows[r].Caddy.style()
-		default:
-			return cellStyle
+func RenderRecords(rows []RecordRow) string {
+	var zones []string
+	byZone := map[string][]RecordRow{}
+	for _, r := range rows {
+		if _, ok := byZone[r.Zone]; !ok {
+			zones = append(zones, r.Zone)
 		}
+		byZone[r.Zone] = append(byZone[r.Zone], r)
 	}
-	return renderTable([]string{"#", "HOST", "L", "DNS", "CA"}, trows, style)
+
+	var b strings.Builder
+	for i, z := range zones {
+		if i > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(headingStyle.Render(z))
+		b.WriteString("\n")
+		b.WriteString(renderRecordZone(byZone[z]))
+	}
+	return b.String()
 }
 
-func StatusLegend(rows []StatusRow) string {
+func renderRecordZone(rows []RecordRow) string {
+	trows := make([][]string, len(rows))
+	for i, r := range rows {
+		trows[i] = []string{
+			strconv.Itoa(i + 1),
+			r.Record,
+			dash(r.Value),
+			dash(r.Proxy),
+			r.Local.glyph(),
+			r.DNS.glyph(),
+			r.Remote.glyph(),
+		}
+	}
+	style := func(r, c int) lipgloss.Style {
+		if r == table.HeaderRow {
+			return headerCellStyle
+		}
+		switch c {
+		case 0:
+			return cellStyle.Foreground(muted)
+		case 1:
+			return cellStyle.Foreground(cyan)
+		case 2:
+			return cellStyle.Foreground(green)
+		case 3:
+			if strings.TrimSpace(rows[r].Proxy) == "" {
+				return cellStyle.Foreground(muted)
+			}
+			return cellStyle.Foreground(yellow)
+		case 4:
+			return rows[r].Local.style()
+		case 5:
+			return rows[r].DNS.style()
+		case 6:
+			return rows[r].Remote.style()
+		default:
+			return cellStyle.Foreground(text)
+		}
+	}
+	return renderTable([]string{"#", "RECORD", "VALUE", "ADDRESS", "L", "DNS", "RE"}, trows, style)
+}
+
+func RecordLegend(rows []RecordRow) string {
 	present := map[Mark]bool{}
 	for _, r := range rows {
 		present[r.Local] = true
 		present[r.DNS] = true
-		present[r.Caddy] = true
+		present[r.Remote] = true
 	}
 	notable := []struct {
 		m     Mark
@@ -247,6 +312,13 @@ func StatusLegend(rows []StatusRow) string {
 		return ""
 	}
 	return strings.Join(parts, mutedStyle.Render("   "))
+}
+
+func dash(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "—"
+	}
+	return s
 }
 
 // LogHandler is a slog.Handler that renders records as a styled level badge plus
@@ -294,7 +366,7 @@ func levelBadge(l slog.Level) string {
 	var label string
 	switch {
 	case l >= slog.LevelError:
-		c, label = red, "ERROR"
+		c, label = pink, "ERROR"
 	case l >= slog.LevelWarn:
 		c, label = yellow, "WARN"
 	case l >= slog.LevelInfo:
