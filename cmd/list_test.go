@@ -54,9 +54,7 @@ func TestBuildStatusRows(t *testing.T) {
 		Conflict: []reconcile.Action{action("conflict.example.com")},
 	}
 
-	untracked := []string{"untracked.example.com"}
-
-	rows := buildStatusRows(local, remote, plan, untracked, true, true)
+	rows := buildStatusRows(local, remote, plan, true, true)
 
 	cases := []struct {
 		host              string
@@ -70,7 +68,6 @@ func TestBuildStatusRows(t *testing.T) {
 		{"nodns.example.com", ui.MarkOK, ui.MarkNA, ui.MarkOK},
 		{"remoteonly.example.com", ui.MarkNA, ui.MarkNA, ui.MarkOK},
 		{"orphan.example.com", ui.MarkNA, ui.MarkMissing, ui.MarkNA},
-		{"untracked.example.com", ui.MarkNA, ui.MarkUntracked, ui.MarkNA},
 	}
 	for _, tc := range cases {
 		r := rowFor(rows, tc.host)
@@ -91,9 +88,35 @@ func TestBuildStatusRows(t *testing.T) {
 	}
 }
 
+func TestBuildStatusRowsSkipsWildcards(t *testing.T) {
+	local := []caddy.Site{
+		site("*.example.com", "", "", false),
+		site("real.example.com", "real", "example.com", true),
+	}
+	remote := []caddy.Site{
+		site("*.example.com", "", "", false),
+		site("real.example.com", "real", "example.com", true),
+	}
+	plan := reconcile.Plan{Delete: []reconcile.Action{action("*.example.com")}}
+
+	rows := buildStatusRows(local, remote, plan, true, true)
+
+	if len(rows) != 1 {
+		t.Fatalf("expected only the non-wildcard host, got %d rows: %v", len(rows), rows)
+	}
+	if rows[0].Host != "real.example.com" {
+		t.Errorf("expected real.example.com, got %q", rows[0].Host)
+	}
+	for _, r := range rows {
+		if isWildcard(r.Host) {
+			t.Errorf("wildcard host leaked into rows: %q", r.Host)
+		}
+	}
+}
+
 func TestBuildStatusRowsRemoteUnknown(t *testing.T) {
 	local := []caddy.Site{site("a.example.com", "a", "example.com", true)}
-	rows := buildStatusRows(local, nil, reconcile.Plan{}, nil, false, true)
+	rows := buildStatusRows(local, nil, reconcile.Plan{}, false, true)
 	if got := rowFor(rows, "a.example.com").Caddy; got != ui.MarkUnknown {
 		t.Errorf("CADDY with remoteOK=false: got %v, want MarkUnknown", got)
 	}
@@ -104,7 +127,7 @@ func TestBuildStatusRowsDNSUnknown(t *testing.T) {
 		site("a.example.com", "a", "example.com", true),
 		site("plain.example.com", "", "", false),
 	}
-	rows := buildStatusRows(local, nil, reconcile.Plan{}, nil, true, false)
+	rows := buildStatusRows(local, nil, reconcile.Plan{}, true, false)
 	if got := rowFor(rows, "a.example.com").DNS; got != ui.MarkUnknown {
 		t.Errorf("DNS with dnsKnown=false: got %v, want MarkUnknown", got)
 	}

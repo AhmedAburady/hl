@@ -30,7 +30,7 @@ dsm.synology.com {
 2. Reconciles Technitium DNS so the zone holds exactly the records your
    annotations declare — creating, updating, and **pruning** as the file changes.
 
-Hand-edit the file whenever you like and re-run `hl sync`; `hl status` previews
+Hand-edit the file whenever you like and re-run `hl sync`; `hl list` previews
 the plan first and changes nothing. And it's careful by default: hl only ever
 touches records *it* created (tagged via Technitium's per-record comment). Your
 hand-made records — and NS/MX/SOA infrastructure — are left strictly alone.
@@ -216,18 +216,35 @@ otherwise the existing local file is copied into a `backups/` directory beside i
 first. Use this to adopt a Caddyfile that was edited on the server, or to recover
 the local copy on a fresh machine.
 
-### `hl status` — preview without changing anything
+### `hl list` — drift at a glance, changing nothing
 
 ```sh
-hl status
+hl list              # compare the local Caddyfile, DNS, and the deployed Caddyfile
+hl list --no-remote  # skip the SSH fetch of the remote Caddyfile (CA shows ?)
 ```
 
-Lists the hosts in your Caddyfile and the pending DNS plan (`+` create, `~`
-update, `-` delete, `!` conflict with an unmanaged record) — a read-only
-`sync --dry-run` that never deploys.
+Prints a per-host matrix of the three places a host can live — the local
+Caddyfile (`L`), Technitium DNS (`DNS`), and the Caddyfile deployed on the Caddy
+host (`CA`, fetched over SSH) — with `✓` in sync, `✗` missing, `~` drift, `!`
+conflict, and `—` not applicable. It covers only the hosts hl manages, and
+wildcard cert blocks (`*.example.com`) are excluded. Below the matrix it prints
+the pending DNS plan (`+` create, `~` update, `-` delete, `!` conflict), then a
+key naming the `L`/`DNS`/`CA` sources. It is read-only — nothing is deployed or
+modified.
 
 You edit the Caddyfile directly — add a block, add its annotation — then run
 `hl sync`. There is no `add` command: the file is the source of truth.
+
+### `hl status` — health check
+
+```sh
+hl status   # is Caddy up, and is Technitium reachable and resolving?
+```
+
+Runs two checks in parallel and prints an aligned `[OK]`/`[FAIL]` line for each:
+Caddy running and reachable over SSH, and Technitium reachable with DNS
+resolving. It exits non-zero if either check fails, so it works as a gate
+(`hl status && hl sync`).
 
 ### All commands
 
@@ -235,8 +252,8 @@ You edit the Caddyfile directly — add a block, add its annotation — then run
 | --- | --- |
 | `hl sync` | Deploy the Caddyfile and reconcile DNS from annotations |
 | `hl pull` | Download the live remote Caddyfile to the local file |
-| `hl status` | Show the LOCAL/DNS/CADDY drift matrix + the pending DNS plan (read-only) |
-| `hl list` | List Technitium DNS records (`--zone` defaults to Caddyfile zones; `--all` for every record) |
+| `hl list` | Show the L/DNS/CA drift matrix + the pending DNS plan (read-only) |
+| `hl status` | Health check: Caddy up/reachable and Technitium reachable/resolving (exits non-zero on failure) |
 | `hl config init` | Create the config file (interactive wizard on a TTY, template otherwise) |
 | `hl config show` | Print effective config (token redacted) |
 
@@ -244,16 +261,20 @@ You edit the Caddyfile directly — add a block, add its annotation — then run
 
 - The local Caddyfile is copied into a `backups/` directory (timestamped names,
   the 2 most recent kept) before every write.
-- Before pushing, the remote file is copied to `<path>.hldns.bak`. If the
-  reload fails, the previous remote file is restored automatically.
-- SSH host keys are checked against `~/.ssh/known_hosts`. An unknown host is
-  accepted on first use with a warning; a **mismatch is rejected**.
+- Before pushing, the remote file is copied to `<path>.hldns.bak`. If the write
+  or reload fails — including a Ctrl-C mid-deploy — the previous remote file is
+  restored automatically.
+- SSH runs through your system `ssh` client, so host keys are checked against
+  `~/.ssh/known_hosts` (`StrictHostKeyChecking=accept-new`): an unknown host is
+  pinned on first use and a **changed key is rejected**. hl never writes
+  `known_hosts` itself, and a 1Password (or other) SSH agent is authorized once.
 - The Technitium token is never printed (`hl config show` shows `<set>`).
 - DNS reconcile only ever updates or deletes records carrying the `managed_tag`
   comment that `hl` sets on records it creates. Records you made by hand (and
   infrastructure records like NS/MX/SOA) are never touched — an annotation that
   collides with one is reported as a conflict and skipped unless you pass
-  `--adopt`. Preview with `hl status` and use `--no-prune` to suppress deletions.
+  `--adopt`. Preview with `hl list`; pass `--no-prune` to `hl sync` to suppress
+  deletions.
 
 ## Development
 

@@ -392,6 +392,26 @@ func Deploy(ctx context.Context, cfg config.Caddy, force bool) (output string, c
 	return out, true, nil
 }
 
+func ServiceActive(ctx context.Context, remote config.Remote, service string) (bool, string, error) {
+	t, _, err := remoteTarget(remote)
+	if err != nil {
+		return false, "", err
+	}
+	out, err := sshx.Run(ctx, t, fmt.Sprintf("systemctl is-active %s", shellQuote(service)))
+	status := strings.TrimSpace(out)
+	if err == nil {
+		return status == "active", status, nil
+	}
+	switch status {
+	case "inactive", "failed", "activating", "deactivating", "reloading", "unknown":
+		return false, status, nil
+	}
+	if status != "" {
+		return false, "", errors.New(status)
+	}
+	return false, "", err
+}
+
 func restoreBackup(ctx context.Context, t sshx.Target, sudo, backup, rp string) {
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 	defer cancel()

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sort"
@@ -75,8 +76,15 @@ func runSync(c *cobra.Command, cfg *config.Config, o syncOpts) error {
 				out(c, "%s", ui.Info("[dry-run] run 'hl validate' to check the Caddyfile on the host"))
 			}
 		} else {
-			out(c, "%s", ui.Step("Deploying to %s …", cfg.Caddy.Remote.Host))
-			deployOut, changed, err := caddy.Deploy(c.Context(), caddyCfg, o.force)
+			var (
+				deployOut string
+				changed   bool
+			)
+			err := ui.WithSpinner(c.Context(), fmt.Sprintf("deploying to %s…", cfg.Caddy.Remote.Host), func(ctx context.Context) error {
+				var e error
+				deployOut, changed, e = caddy.Deploy(ctx, caddyCfg, o.force)
+				return e
+			})
 			if err != nil {
 				if errors.Is(err, caddy.ErrValidate) {
 					out(c, "%s", ui.Warn("Caddyfile is invalid — nothing deployed (live config untouched)."))
@@ -118,8 +126,12 @@ func validatePreview(c *cobra.Command, caddyCfg config.Caddy) error {
 	if strings.TrimSpace(caddyCfg.Remote.ValidateCmd) == "" {
 		return nil
 	}
-	out(c, "%s", ui.Step("Validating %s on %s …", caddyCfg.LocalFile, caddyCfg.Remote.Host))
-	vout, err := caddy.Validate(c.Context(), caddyCfg)
+	var vout string
+	err := ui.WithSpinner(c.Context(), fmt.Sprintf("validating on %s…", caddyCfg.Remote.Host), func(ctx context.Context) error {
+		var e error
+		vout, e = caddy.Validate(ctx, caddyCfg)
+		return e
+	})
 	if err != nil {
 		if errors.Is(err, caddy.ErrValidate) {
 			out(c, "%s", ui.Warn("Caddyfile is invalid."))
@@ -212,7 +224,19 @@ func printDNSPlan(c *cobra.Command, plan reconcile.Plan, managedCount int, dryRu
 // Technitium zone(s) into line, printing the plan. With dryRun it only prints;
 // with adopt it overwrites records hl does not already manage.
 func reconcileDNS(c *cobra.Command, cfg *config.Config, content string, dryRun, noPrune, adopt bool) error {
-	desired, plan, _, cl, skip, reason, err := computeDNSPlan(c, cfg, content, noPrune, adopt)
+	var (
+		desired []reconcile.Desired
+		plan    reconcile.Plan
+		cl      *technitium.Client
+		skip    bool
+		reason  string
+		err     error
+	)
+	err = ui.WithSpinner(c.Context(), "reading DNS records…", func(context.Context) error {
+		var e error
+		desired, plan, _, cl, skip, reason, e = computeDNSPlan(c, cfg, content, noPrune, adopt)
+		return e
+	})
 	if err != nil {
 		return err
 	}
@@ -228,7 +252,9 @@ func reconcileDNS(c *cobra.Command, cfg *config.Config, content string, dryRun, 
 	if plan.Empty() {
 		return nil
 	}
-	if err := plan.Apply(c.Context(), cl, cfg.Caddy.ManagedTag); err != nil {
+	if err := ui.WithSpinner(c.Context(), "applying DNS changes…", func(ctx context.Context) error {
+		return plan.Apply(ctx, cl, cfg.Caddy.ManagedTag)
+	}); err != nil {
 		return err
 	}
 	out(c, "%s", ui.OK("DNS reconciled — %d created, %d updated, %d deleted", len(plan.Create), len(plan.Update), len(plan.Delete)))

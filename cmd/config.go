@@ -6,9 +6,9 @@ import (
 	"os"
 	"strings"
 
+	"charm.land/huh/v2"
 	"github.com/AhmedAburady/hl/internal/caddy"
 	"github.com/AhmedAburady/hl/internal/config"
-	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )

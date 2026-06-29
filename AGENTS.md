@@ -11,7 +11,7 @@ Key facts:
 - Build the runnable binary as `hl`: `go build -o hl .`. Compile-all: `go build ./...`.
 - Verify before finishing: `go vet ./...` and `go test ./...`. Modernize with `go fix ./...` (safe, analysis-based).
 - Entry point is `main.go` → `cmd.Root()` → `fang.Execute` (Charm Fang on top of Cobra). All commands are `newXxxCmd()` factories in `cmd/` registered in `cmd/root.go`.
-- Domain logic is in `internal/`: `config` (Viper + `ResolveSecret` for token), `caddy` (Caddyfile parser, DNS annotations, SSH deploy via base64|tee+sudo), `technitium` (HTTP API client), `reconcile` (desired-state derivation + diff/apply — the heart of sync), `sshx` (SSH dial/run).
+- Domain logic is in `internal/`: `config` (Viper + `ResolveSecret` for token), `caddy` (Caddyfile parser, DNS annotations, SSH deploy via base64|tee+sudo), `technitium` (HTTP API client), `reconcile` (desired-state derivation + diff/apply — the heart of sync), `sshx` (runs remote commands by shelling out to the system `ssh` binary).
 - DNS reconcile is ownership-scoped: records `hl` creates carry the `caddy.managed_tag` comment (default `managed-by:hl`); only tagged records are ever updated or pruned. The one exception is `hl sync --adopt`, which overwrites an existing **same-type** untagged record to take ownership of it (a single atomic `AddRecord`); it never deletes an untagged record of a different type. Without `--adopt`, an annotation that collides with an untagged record is reported as a conflict and skipped (and its name is protected from pruning). Do not widen untagged-record mutation beyond this.
 - Config lives at `~/.config/hl/config.yaml` (or `$XDG_CONFIG_HOME/hl/config.yaml` if set); env override prefix is `HLDNS_` (dots → underscores). The Technitium API token is created once in the web UI and stored in `technitium.token`; `config.ResolveSecret` resolves it at use time (literal, `${ENV}`, or an `op://` 1Password reference via `op read`). There is no login command.
 
@@ -54,31 +54,36 @@ template otherwise.
    with `sudo` when the SSH user is not root — no SFTP, so privileged paths like
    /etc/caddy work; the host needs passwordless sudo), runs `reload_cmd`
    (default `systemctl restart caddy` — restart, not `caddy reload`, so a stopped
-   Caddy is brought back up; reload only works against a running admin API), and
-   on failure restores the backup *and* re-runs `reload_cmd` so Caddy ends up on
-   the good config. Never edit the remote Caddyfile in place; the local file is
-   the source of truth.
+   Caddy is brought back up; reload only works against a running admin API). A
+   failed reload restores the backup *and* re-runs `reload_cmd`; a failed or
+   interrupted **write** also restores the backup (`restoreBackup` runs on a
+   `context.WithoutCancel` context so a Ctrl-C still rolls back). Never edit the
+   remote Caddyfile in place; the local file is the source of truth.
 
 5. **Never log or print the Technitium token.** `config show` redacts it to
    `<set>`. Keep it that way.
 
 6. **Use Go 1.26 idioms.** Prefer `errors.AsType[T]` over `errors.As`
-   (already used for `*fs.PathError` and `*knownhosts.KeyError`), context-aware
-   dialing via `net.Dialer.DialContext`, `log/slog` for diagnostics, and
-   `strings.Cut`. Run `go fix ./...` before finishing.
+   (used for `*fs.PathError`), `log/slog` for diagnostics, and `strings.Cut`.
+   Run `go fix ./...` before finishing.
 
 7. **Verify before finishing.** Run `go build ./...`, `go vet ./...`, and
    `go test ./...` after any code change. Fix all failures.
 
 ## Constraints
 
-- Do not change the SSH host-key policy: unknown hosts are TOFU-accepted with a
-  `slog.Warn`, but a known-hosts **mismatch must be rejected**. Do not switch to
-  `ssh.InsecureIgnoreHostKey`.
+- SSH runs by shelling out to the system `ssh` binary (`internal/sshx`), the
+  sanctioned pattern (it matches the user's other apps and lets a 1Password agent
+  authorize once); do not reintroduce `golang.org/x/crypto/ssh`. Keep
+  `StrictHostKeyChecking=accept-new` (TOFU: pin an unknown host on first use,
+  reject a **changed** key) — do not weaken it (`no`/`accept`) or disable host-key
+  checking, and do not have the app write `known_hosts` itself.
 - Do not rename the invoked command away from `hl` or the module path
   `github.com/AhmedAburady/hl` unless the user explicitly asks.
 - Do not add Bubble Tea / full-TUI behavior; the tool is flags-driven. The only
-  interactive surface is `hl config init`'s stdin onboarding wizard (TTY-gated).
+  interactive surfaces are `hl config init`'s stdin onboarding wizard and the
+  transient progress spinner (`internal/ui.WithSpinner`, `charm.land/huh/v2/spinner`),
+  both TTY-gated. The spinner is a deliberate exception, not a license for a TUI.
 - Do not widen scope to the Caddy Admin API; this tool edits a local Caddyfile
   and deploys over SSH by design.
 
@@ -95,7 +100,6 @@ Expected approach:
 
 ## Reference
 
-- `PLAN.md` — the original design plan and per-component behavior.
 - `README.md` — human-facing install and usage docs, including the annotation grammar.
 - Config schema and env vars: see `internal/config/config.go` (`setDefaults`,
   `Remote`/`Caddy`/`Technitium` structs) — the canonical source for field names.
@@ -104,4 +108,4 @@ Expected approach:
   ListZones → `/api/zones/list`). Auth is a UI-created API token (Bearer); no login.
 - DNS reconcile: `internal/reconcile/reconcile.go` (`DeriveDesired`, `Resolve`,
   `BuildPlan`, `Plan.Apply`); CLI glue in `cmd/sync.go` (`runSync`, `reconcileDNS`).
-- SSH: `internal/sshx/sshx.go` (`Run`, `dial`); deploy writes files via `caddy.Deploy` (base64|tee+sudo).
+- SSH: `internal/sshx/sshx.go` (`Run` shells out to the system `ssh` binary with key/agent auth and `StrictHostKeyChecking=accept-new`); deploy writes files via `caddy.Deploy` (base64|tee+sudo).

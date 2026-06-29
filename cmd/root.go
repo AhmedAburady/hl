@@ -4,8 +4,10 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/AhmedAburady/hl/internal/config"
+	"github.com/charmbracelet/colorprofile"
 	"github.com/spf13/cobra"
 )
 
@@ -27,6 +29,7 @@ the Caddyfile and reconciles Technitium DNS to match.`,
 	}
 	root.PersistentFlags().StringVarP(&configPath, "config", "c", "",
 		"path to config file (default ~/.config/hl/config.yaml)")
+	root.SetOut(colorprofile.NewWriter(os.Stdout, os.Environ()))
 
 	root.AddCommand(newSyncCmd(), newPullCmd(), newValidateCmd(), newStatusCmd(), newListCmd(), newConfigCmd())
 	return root

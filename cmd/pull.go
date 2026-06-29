@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"strings"
 
 	"github.com/AhmedAburady/hl/internal/caddy"
@@ -34,8 +35,12 @@ is overwritten — pull is the inverse of 'hl sync's deploy.`,
 // runPull fetches the remote Caddyfile and writes it locally when it differs,
 // backing up the previous local file. It is a no-op when the two already match.
 func runPull(c *cobra.Command, cfg *config.Config, dryRun bool) error {
-	out(c, "%s", ui.Step("Fetching %s from %s …", cfg.Caddy.Remote.RemotePath, cfg.Caddy.Remote.Host))
-	remote, err := caddy.ReadRemoteFile(c.Context(), cfg.Caddy.Remote)
+	var remote string
+	err := ui.WithSpinner(c.Context(), "fetching remote Caddyfile…", func(ctx context.Context) error {
+		var e error
+		remote, e = caddy.ReadRemoteFile(ctx, cfg.Caddy.Remote)
+		return e
+	})
 	if err != nil {
 		out(c, "%s", ui.Warn("Pull failed: %v", err))
 		if s := strings.TrimSpace(remote); s != "" {
