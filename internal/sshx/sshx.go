@@ -68,7 +68,7 @@ func sshArgs(t Target) []string {
 	if t.Port != 0 {
 		args = append(args, "-p", strconv.Itoa(t.Port))
 	}
-	return append(args, t.hostArg())
+	return append(args, "--", t.hostArg())
 }
 
 func Run(ctx context.Context, t Target, cmd string) (string, error) {

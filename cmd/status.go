@@ -12,10 +12,7 @@ import (
 )
 
 func newStatusCmd() *cobra.Command {
-	var (
-		noPrune  bool
-		noRemote bool
-	)
+	var noRemote bool
 	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show the drift between the local Caddyfile, Technitium DNS, and the Caddy host",
@@ -29,15 +26,14 @@ by the DNS changes a sync would make. It deploys and modifies nothing.`,
 			if err != nil {
 				return err
 			}
-			return runStatus(c, cfg, noPrune, noRemote)
+			return runStatus(c, cfg, noRemote)
 		},
 	}
-	cmd.Flags().BoolVar(&noPrune, "no-prune", false, "exclude managed-record deletions from the plan")
 	cmd.Flags().BoolVar(&noRemote, "no-remote", false, "skip the SSH fetch of the remote Caddyfile (CADDY column shows ?)")
 	return cmd
 }
 
-func runStatus(c *cobra.Command, cfg *config.Config, noPrune, noRemote bool) error {
+func runStatus(c *cobra.Command, cfg *config.Config, noRemote bool) error {
 	content, err := caddy.ReadLocalFile(cfg.Caddy.LocalFile)
 	if err != nil {
 		return err
@@ -89,11 +85,7 @@ func runStatus(c *cobra.Command, cfg *config.Config, noPrune, noRemote bool) err
 	case dnsSkip:
 		out(c, "%s", ui.Info("DNS: %s", dnsReason))
 	default:
-		detail := plan
-		if noPrune {
-			detail.Delete = nil
-		}
-		printDNSPlan(c, detail, len(desired), true)
+		printDNSPlan(c, plan, len(desired), true)
 	}
 	return nil
 }
