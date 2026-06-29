@@ -1,6 +1,62 @@
 package caddy
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestWriteLocalFileBacksUpExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Caddyfile")
+
+	// Missing file: no backup, just a write.
+	if err := WriteLocalFile(path, "v1"); err != nil {
+		t.Fatalf("write v1: %v", err)
+	}
+	if baks := backups(t, dir); len(baks) != 0 {
+		t.Fatalf("expected no backup for a fresh write, got %v", baks)
+	}
+
+	// Two rewrites in quick succession (same wall-clock second) must each leave a
+	// distinct backup — the second cannot clobber the first.
+	if err := WriteLocalFile(path, "v2"); err != nil {
+		t.Fatalf("write v2: %v", err)
+	}
+	if err := WriteLocalFile(path, "v3"); err != nil {
+		t.Fatalf("write v3: %v", err)
+	}
+	if got := backups(t, dir); len(got) != 2 {
+		t.Fatalf("expected 2 distinct backups, got %d: %v", len(got), got)
+	}
+	if data, _ := os.ReadFile(path); string(data) != "v3" {
+		t.Errorf("final content = %q, want v3", data)
+	}
+}
+
+func TestWriteLocalFileBacksUpEmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Caddyfile")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteLocalFile(path, "new"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if got := backups(t, dir); len(got) != 1 {
+		t.Fatalf("an existing empty file must still be backed up, got %v", got)
+	}
+}
+
+// backups lists the .bak files WriteLocalFile created in dir.
+func backups(t *testing.T, dir string) []string {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(dir, "*.bak*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return matches
+}
 
 func TestShellQuoteEscapesSingleQuotes(t *testing.T) {
 	cases := map[string]string{

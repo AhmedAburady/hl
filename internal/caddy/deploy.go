@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -42,11 +43,13 @@ func ReadLocalFile(path string) (string, error) {
 }
 
 // WriteLocalFile writes content to the local Caddyfile after making a
-// timestamped backup of the existing file.
+// timestamped backup of the existing file. Any existing file is backed up,
+// including an empty one, and the backup name is made unique so a second write
+// within the same second cannot overwrite the previous backup.
 func WriteLocalFile(path, content string) error {
 	path = expandTilde(path)
-	if existing, err := os.ReadFile(path); err == nil && len(existing) > 0 {
-		bak := path + "." + time.Now().Format("20060102-150405") + ".bak"
+	if existing, err := os.ReadFile(path); err == nil {
+		bak := uniqueBackupPath(path)
 		if err := os.WriteFile(bak, existing, 0o600); err != nil {
 			return fmt.Errorf("backup %s: %w", bak, err)
 		}
@@ -55,6 +58,20 @@ func WriteLocalFile(path, content string) error {
 		return err
 	}
 	return os.WriteFile(path, []byte(content), 0o600)
+}
+
+// uniqueBackupPath returns a timestamped ".bak" path for path that does not yet
+// exist, appending a numeric suffix when several writes land in the same second
+// so an earlier backup is never clobbered.
+func uniqueBackupPath(path string) string {
+	base := path + "." + time.Now().Format("20060102-150405") + ".bak"
+	bak := base
+	for i := 1; ; i++ {
+		if _, err := os.Stat(bak); errors.Is(err, fs.ErrNotExist) {
+			return bak
+		}
+		bak = fmt.Sprintf("%s.%d", base, i)
+	}
 }
 
 // contentSHA256 returns the hex SHA-256 of s, formatted to match `sha256sum`
