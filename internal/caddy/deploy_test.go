@@ -1,6 +1,7 @@
 package caddy
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -18,8 +19,7 @@ func TestWriteLocalFileBacksUpExistingFile(t *testing.T) {
 		t.Fatalf("expected no backup for a fresh write, got %v", baks)
 	}
 
-	// Two rewrites in quick succession (same wall-clock second) must each leave a
-	// distinct backup — the second cannot clobber the first.
+	// Two same-second rewrites must each leave a distinct backup.
 	if err := WriteLocalFile(path, "v2"); err != nil {
 		t.Fatalf("write v2: %v", err)
 	}
@@ -48,10 +48,24 @@ func TestWriteLocalFileBacksUpEmptyFile(t *testing.T) {
 	}
 }
 
-// backups lists the .bak files WriteLocalFile created in dir.
+func TestWriteLocalFilePrunesOldBackups(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Caddyfile")
+	// Writing past the cap must settle the backups/ dir at maxLocalBackups.
+	for i := 0; i < maxLocalBackups+5; i++ {
+		if err := WriteLocalFile(path, fmt.Sprintf("v%d", i)); err != nil {
+			t.Fatalf("write %d: %v", i, err)
+		}
+	}
+	if got := backups(t, dir); len(got) != maxLocalBackups {
+		t.Fatalf("backups not pruned to %d, got %d", maxLocalBackups, len(got))
+	}
+}
+
+// backups lists the backup copies WriteLocalFile created in dir/backups.
 func backups(t *testing.T, dir string) []string {
 	t.Helper()
-	matches, err := filepath.Glob(filepath.Join(dir, "*.bak*"))
+	matches, err := filepath.Glob(filepath.Join(dir, "backups", "Caddyfile.*"))
 	if err != nil {
 		t.Fatal(err)
 	}

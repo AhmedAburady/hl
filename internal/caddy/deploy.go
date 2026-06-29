@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -42,16 +43,15 @@ func ReadLocalFile(path string) (string, error) {
 	return string(data), nil
 }
 
-// WriteLocalFile writes content to the local Caddyfile after making a
-// timestamped backup of the existing file. Any existing file is backed up,
-// including an empty one, and the backup name is made unique so a second write
-// within the same second cannot overwrite the previous backup.
+// maxLocalBackups caps how many timestamped copies are kept in backups/.
+const maxLocalBackups = 2
+
+// WriteLocalFile backs up the existing file into backups/ then writes content.
 func WriteLocalFile(path, content string) error {
 	path = expandTilde(path)
 	if existing, err := os.ReadFile(path); err == nil {
-		bak := uniqueBackupPath(path)
-		if err := os.WriteFile(bak, existing, 0o600); err != nil {
-			return fmt.Errorf("backup %s: %w", bak, err)
+		if err := backupLocalFile(path, existing); err != nil {
+			return err
 		}
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -60,17 +60,36 @@ func WriteLocalFile(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0o600)
 }
 
-// uniqueBackupPath returns a timestamped ".bak" path for path that does not yet
-// exist, appending a numeric suffix when several writes land in the same second
-// so an earlier backup is never clobbered.
-func uniqueBackupPath(path string) string {
-	base := path + "." + time.Now().Format("20060102-150405") + ".bak"
-	bak := base
+// backupLocalFile copies data into backups/ under a unique timestamped name, then prunes to maxLocalBackups.
+func backupLocalFile(path string, data []byte) error {
+	dir := filepath.Join(filepath.Dir(path), "backups")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create backup dir %s: %w", dir, err)
+	}
+	name := filepath.Base(path) + "." + time.Now().Format("20060102-150405")
+	bak := filepath.Join(dir, name)
 	for i := 1; ; i++ {
 		if _, err := os.Stat(bak); errors.Is(err, fs.ErrNotExist) {
-			return bak
+			break
 		}
-		bak = fmt.Sprintf("%s.%d", base, i)
+		bak = filepath.Join(dir, fmt.Sprintf("%s.%d", name, i))
+	}
+	if err := os.WriteFile(bak, data, 0o600); err != nil {
+		return fmt.Errorf("backup %s: %w", bak, err)
+	}
+	pruneBackups(dir, filepath.Base(path), maxLocalBackups)
+	return nil
+}
+
+// pruneBackups deletes all but the most recent keep backups of base in dir (lexical sort is oldest-first).
+func pruneBackups(dir, base string, keep int) {
+	matches, err := filepath.Glob(filepath.Join(dir, base+".*"))
+	if err != nil || len(matches) <= keep {
+		return
+	}
+	sort.Strings(matches)
+	for _, old := range matches[:len(matches)-keep] {
+		_ = os.Remove(old)
 	}
 }
 

@@ -212,9 +212,9 @@ hl pull --dry-run    # report whether the local file would change; write nothing
 
 The inverse of `hl sync`'s deploy: it reads the live Caddyfile from the host over
 SSH and writes it locally. If your local file already matches, nothing is written;
-otherwise the existing local file is backed up to a timestamped `.bak` first. Use
-this to adopt a Caddyfile that was edited on the server, or to recover the local
-copy on a fresh machine.
+otherwise the existing local file is copied into a `backups/` directory beside it
+first. Use this to adopt a Caddyfile that was edited on the server, or to recover
+the local copy on a fresh machine.
 
 ### `hl status` — preview without changing anything
 
@@ -242,7 +242,8 @@ You edit the Caddyfile directly — add a block, add its annotation — then run
 
 ## Safety
 
-- The local Caddyfile is backed up to a timestamped `.bak` before every write.
+- The local Caddyfile is copied into a `backups/` directory (timestamped names,
+  the 2 most recent kept) before every write.
 - Before pushing, the remote file is copied to `<path>.hldns.bak`. If the
   reload fails, the previous remote file is restored automatically.
 - SSH host keys are checked against `~/.ssh/known_hosts`. An unknown host is
