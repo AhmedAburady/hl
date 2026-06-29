@@ -2,11 +2,15 @@ package caddy
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -39,20 +43,99 @@ func ReadLocalFile(path string) (string, error) {
 	return string(data), nil
 }
 
-// WriteLocalFile writes content to the local Caddyfile after making a
-// timestamped backup of the existing file.
+// maxLocalBackups caps how many timestamped copies are kept in backups/.
+const maxLocalBackups = 2
+
+// WriteLocalFile backs up the existing file into backups/ then writes content.
 func WriteLocalFile(path, content string) error {
 	path = expandTilde(path)
-	if existing, err := os.ReadFile(path); err == nil && len(existing) > 0 {
-		bak := path + "." + time.Now().Format("20060102-150405") + ".bak"
-		if err := os.WriteFile(bak, existing, 0o600); err != nil {
-			return fmt.Errorf("backup %s: %w", bak, err)
+	if existing, err := os.ReadFile(path); err == nil {
+		if err := backupLocalFile(path, existing); err != nil {
+			return err
 		}
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 	return os.WriteFile(path, []byte(content), 0o600)
+}
+
+// backupLocalFile copies data into backups/ under a unique timestamped name, then prunes to maxLocalBackups.
+func backupLocalFile(path string, data []byte) error {
+	dir := filepath.Join(filepath.Dir(path), "backups")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create backup dir %s: %w", dir, err)
+	}
+	name := filepath.Base(path) + "." + time.Now().Format("20060102-150405")
+	bak := filepath.Join(dir, name)
+	for i := 1; ; i++ {
+		if _, err := os.Stat(bak); errors.Is(err, fs.ErrNotExist) {
+			break
+		}
+		bak = filepath.Join(dir, fmt.Sprintf("%s.%d", name, i))
+	}
+	if err := os.WriteFile(bak, data, 0o600); err != nil {
+		return fmt.Errorf("backup %s: %w", bak, err)
+	}
+	pruneBackups(dir, filepath.Base(path), maxLocalBackups)
+	return nil
+}
+
+// pruneBackups deletes all but the most recent keep backups of base in dir (lexical sort is oldest-first).
+func pruneBackups(dir, base string, keep int) {
+	matches, err := filepath.Glob(filepath.Join(dir, base+".*"))
+	if err != nil || len(matches) <= keep {
+		return
+	}
+	sort.Strings(matches)
+	for _, old := range matches[:len(matches)-keep] {
+		_ = os.Remove(old)
+	}
+}
+
+// contentSHA256 returns the hex SHA-256 of s, formatted to match `sha256sum`
+// output so the local Caddyfile can be compared against the remote file's hash
+// without transferring the remote file.
+func contentSHA256(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
+
+// readRemoteCmd renders the command that prints the remote Caddyfile to stdout,
+// elevated with sudo for a non-root user so root-owned paths like
+// /etc/caddy/Caddyfile remain readable.
+func readRemoteCmd(sudo, rp string) string {
+	return fmt.Sprintf("%scat %s", sudo, shellQuote(rp))
+}
+
+// remoteSHACmd renders the command that prints the remote Caddyfile's SHA-256.
+// It swallows errors so a missing file yields empty output (parsed as "no hash")
+// rather than a remote-command failure.
+func remoteSHACmd(sudo, rp string) string {
+	return fmt.Sprintf("%ssha256sum %s 2>/dev/null", sudo, shellQuote(rp))
+}
+
+// parseSHA pulls the hash (first field) out of `sha256sum` output. ok is false
+// when the output is empty — the file did not exist or could not be read.
+func parseSHA(out string) (sum string, ok bool) {
+	if f := strings.Fields(out); len(f) > 0 {
+		return f[0], true
+	}
+	return "", false
+}
+
+// ReadRemoteFile reads the remote Caddyfile over SSH (cat, prefixed with sudo for
+// a non-root user). A missing remote file surfaces as an error.
+func ReadRemoteFile(ctx context.Context, remote config.Remote) (string, error) {
+	t, sudo, err := remoteTarget(remote)
+	if err != nil {
+		return "", err
+	}
+	out, err := sshx.Run(ctx, t, readRemoteCmd(sudo, remote.RemotePath))
+	if err != nil {
+		return out, fmt.Errorf("read remote %s: %w", remote.RemotePath, err)
+	}
+	return out, nil
 }
 
 // ErrValidate marks a deploy or check that aborted because the staged Caddyfile
@@ -223,19 +306,37 @@ func Validate(ctx context.Context, cfg config.Caddy) (string, error) {
 // When validate_cmd is set, the file is first staged to a per-run temp path and
 // validated there; a rejected file aborts with ErrValidate and the live config
 // is never touched, while a validator that cannot run returns an ordinary error.
-func Deploy(ctx context.Context, cfg config.Caddy) (string, error) {
+//
+// Smart skip: unless force is set, Deploy first compares the live remote file's
+// SHA-256 with the local content and, when they match, returns changed=false
+// without writing or reloading. force bypasses this so the file is always
+// rewritten and reload_cmd re-run — the way to bring a stopped Caddy back up on
+// an otherwise-unchanged config.
+func Deploy(ctx context.Context, cfg config.Caddy, force bool) (output string, changed bool, err error) {
 	remote := cfg.Remote
 	t, sudo, err := remoteTarget(remote)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 
 	content, err := os.ReadFile(expandTilde(cfg.LocalFile))
 	if err != nil {
-		return "", fmt.Errorf("read local %s: %w", cfg.LocalFile, err)
+		return "", false, fmt.Errorf("read local %s: %w", cfg.LocalFile, err)
 	}
 
 	rp := remote.RemotePath
+
+	// Nothing to do when the live file already hashes to the local content. A
+	// transport error or missing file falls through to a normal deploy, which
+	// surfaces the real problem.
+	if !force {
+		if out, err := sshx.Run(ctx, t, remoteSHACmd(sudo, rp)); err == nil {
+			if sum, ok := parseSHA(out); ok && sum == contentSHA256(string(content)) {
+				return "", false, nil
+			}
+		}
+	}
+
 	backup := rp + ".hldns.bak"
 
 	// Validate a staged copy first. The live Caddyfile is never touched until the
@@ -244,18 +345,18 @@ func Deploy(ctx context.Context, cfg config.Caddy) (string, error) {
 		staged := stagedPath(rp)
 		vcmd, err := validateCmd(remote.ValidateCmd, sudo, staged)
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
 		if out, err := sshx.Run(ctx, t, stageCmd(sudo, rp, staged, content)); err != nil {
-			return out, fmt.Errorf("stage %s: %w", staged, err)
+			return out, false, fmt.Errorf("stage %s: %w", staged, err)
 		}
 		out, rejected, rerr := runValidator(ctx, t, vcmd)
 		_, _ = sshx.Run(ctx, t, fmt.Sprintf("%srm -f %s", sudo, shellQuote(staged)))
 		if rerr != nil {
-			return out, rerr
+			return out, false, rerr
 		}
 		if rejected {
-			return out, ErrValidate
+			return out, false, ErrValidate
 		}
 	}
 
@@ -267,7 +368,7 @@ func Deploy(ctx context.Context, cfg config.Caddy) (string, error) {
 		stageCmd(sudo, rp, rp, content),
 	)
 	if out, err := sshx.Run(ctx, t, promote); err != nil {
-		return out, fmt.Errorf("write %s: %w", rp, err)
+		return out, false, fmt.Errorf("write %s: %w", rp, err)
 	}
 
 	reload := remote.ReloadCmd
@@ -283,9 +384,9 @@ func Deploy(ctx context.Context, cfg config.Caddy) (string, error) {
 		// Caddy up on the good config.
 		_, _ = sshx.Run(ctx, t, fmt.Sprintf("%smv -f %s %s", sudo, shellQuote(backup), shellQuote(rp)))
 		_, _ = sshx.Run(ctx, t, reload)
-		return out, fmt.Errorf("reload failed (restored previous config): %w", err)
+		return out, false, fmt.Errorf("reload failed (restored previous config): %w", err)
 	}
-	return out, nil
+	return out, true, nil
 }
 
 // shellQuote single-quotes s for safe use in a remote shell command, escaping

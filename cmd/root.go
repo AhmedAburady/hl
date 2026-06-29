@@ -28,7 +28,7 @@ the Caddyfile and reconciles Technitium DNS to match.`,
 	root.PersistentFlags().StringVarP(&configPath, "config", "c", "",
 		"path to config file (default ~/.config/hl/config.yaml)")
 
-	root.AddCommand(newSyncCmd(), newValidateCmd(), newStatusCmd(), newDNSCmd(), newConfigCmd())
+	root.AddCommand(newSyncCmd(), newPullCmd(), newValidateCmd(), newStatusCmd(), newDNSCmd(), newConfigCmd())
 	return root
 }
 

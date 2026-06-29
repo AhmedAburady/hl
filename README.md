@@ -187,7 +187,13 @@ hl sync --no-dns     # deploy Caddy only
 hl sync --no-deploy  # reconcile DNS only
 hl sync --no-prune   # never delete managed records absent from the file
 hl sync --adopt      # overwrite existing records hl does not manage
+hl sync --force      # redeploy + reload even if the remote file already matches
 ```
+
+The deploy step is a no-op when the live remote Caddyfile already hashes (SHA-256)
+to your local file — sync compares the two before writing, so it never restarts
+Caddy for an unchanged config. Pass `--force` to deploy and reload anyway, which
+is also how you bring a **stopped** Caddy back up on an otherwise-unchanged file.
 
 hl only ever touches records it created (tagged `managed-by:hl`). If an
 annotation would land on a record that already exists and is **not** managed by
@@ -196,6 +202,19 @@ from pruning. Re-run with `--adopt` to take ownership by overwriting it — but
 only when the existing record is the **same type** (a single atomic write). A
 cross-type collision (e.g. a CNAME over an existing A or TXT) is never resolved
 by deleting the other record; remove it by hand first.
+
+### `hl pull` — bring the remote Caddyfile down to local
+
+```sh
+hl pull              # download the live remote Caddyfile to the local file
+hl pull --dry-run    # report whether the local file would change; write nothing
+```
+
+The inverse of `hl sync`'s deploy: it reads the live Caddyfile from the host over
+SSH and writes it locally. If your local file already matches, nothing is written;
+otherwise the existing local file is copied into a `backups/` directory beside it
+first. Use this to adopt a Caddyfile that was edited on the server, or to recover
+the local copy on a fresh machine.
 
 ### `hl status` — preview without changing anything
 
@@ -215,6 +234,7 @@ You edit the Caddyfile directly — add a block, add its annotation — then run
 | Command | What it does |
 | --- | --- |
 | `hl sync` | Deploy the Caddyfile and reconcile DNS from annotations |
+| `hl pull` | Download the live remote Caddyfile to the local file |
 | `hl status` | Show hosts + the pending DNS plan (read-only) |
 | `hl dns list` | List hl-managed records (`--zone` defaults to Caddyfile zones; `--all` for every record) |
 | `hl config init` | Create the config file (interactive wizard on a TTY, template otherwise) |
@@ -222,7 +242,8 @@ You edit the Caddyfile directly — add a block, add its annotation — then run
 
 ## Safety
 
-- The local Caddyfile is backed up to a timestamped `.bak` before every write.
+- The local Caddyfile is copied into a `backups/` directory (timestamped names,
+  the 2 most recent kept) before every write.
 - Before pushing, the remote file is copied to `<path>.hldns.bak`. If the
   reload fails, the previous remote file is restored automatically.
 - SSH host keys are checked against `~/.ssh/known_hosts`. An unknown host is

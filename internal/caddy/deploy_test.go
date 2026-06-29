@@ -1,6 +1,76 @@
 package caddy
 
-import "testing"
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestWriteLocalFileBacksUpExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Caddyfile")
+
+	// Missing file: no backup, just a write.
+	if err := WriteLocalFile(path, "v1"); err != nil {
+		t.Fatalf("write v1: %v", err)
+	}
+	if baks := backups(t, dir); len(baks) != 0 {
+		t.Fatalf("expected no backup for a fresh write, got %v", baks)
+	}
+
+	// Two same-second rewrites must each leave a distinct backup.
+	if err := WriteLocalFile(path, "v2"); err != nil {
+		t.Fatalf("write v2: %v", err)
+	}
+	if err := WriteLocalFile(path, "v3"); err != nil {
+		t.Fatalf("write v3: %v", err)
+	}
+	if got := backups(t, dir); len(got) != 2 {
+		t.Fatalf("expected 2 distinct backups, got %d: %v", len(got), got)
+	}
+	if data, _ := os.ReadFile(path); string(data) != "v3" {
+		t.Errorf("final content = %q, want v3", data)
+	}
+}
+
+func TestWriteLocalFileBacksUpEmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Caddyfile")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteLocalFile(path, "new"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if got := backups(t, dir); len(got) != 1 {
+		t.Fatalf("an existing empty file must still be backed up, got %v", got)
+	}
+}
+
+func TestWriteLocalFilePrunesOldBackups(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Caddyfile")
+	// Writing past the cap must settle the backups/ dir at maxLocalBackups.
+	for i := 0; i < maxLocalBackups+5; i++ {
+		if err := WriteLocalFile(path, fmt.Sprintf("v%d", i)); err != nil {
+			t.Fatalf("write %d: %v", i, err)
+		}
+	}
+	if got := backups(t, dir); len(got) != maxLocalBackups {
+		t.Fatalf("backups not pruned to %d, got %d", maxLocalBackups, len(got))
+	}
+}
+
+// backups lists the backup copies WriteLocalFile created in dir/backups.
+func backups(t *testing.T, dir string) []string {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(dir, "backups", "Caddyfile.*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return matches
+}
 
 func TestShellQuoteEscapesSingleQuotes(t *testing.T) {
 	cases := map[string]string{
@@ -83,6 +153,41 @@ func TestExtractRC(t *testing.T) {
 	}
 	if _, _, ok := extractRC("no marker here"); ok {
 		t.Error("extractRC reported ok with no marker present")
+	}
+}
+
+func TestContentSHA256MatchesSha256sum(t *testing.T) {
+	// Known vector: sha256sum of "hello\n" (the trailing newline is significant).
+	if got := contentSHA256("hello\n"); got != "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03" {
+		t.Errorf("contentSHA256 = %q, want sha256sum of \"hello\\n\"", got)
+	}
+	if contentSHA256("a") == contentSHA256("b") {
+		t.Error("distinct content produced the same hash")
+	}
+}
+
+func TestReadAndSHACmds(t *testing.T) {
+	if got := readRemoteCmd("", "/etc/caddy/Caddyfile"); got != `cat '/etc/caddy/Caddyfile'` {
+		t.Errorf("readRemoteCmd root = %q", got)
+	}
+	if got := readRemoteCmd("sudo ", "/etc/caddy/Caddyfile"); got != `sudo cat '/etc/caddy/Caddyfile'` {
+		t.Errorf("readRemoteCmd sudo = %q", got)
+	}
+	if got := remoteSHACmd("sudo ", "/etc/caddy/Caddyfile"); got != `sudo sha256sum '/etc/caddy/Caddyfile' 2>/dev/null` {
+		t.Errorf("remoteSHACmd = %q", got)
+	}
+}
+
+func TestParseSHA(t *testing.T) {
+	sum, ok := parseSHA("5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03  /etc/caddy/Caddyfile\n")
+	if !ok || sum != "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03" {
+		t.Fatalf("parseSHA = %q ok=%v, want the hash field", sum, ok)
+	}
+	if _, ok := parseSHA(""); ok {
+		t.Error("parseSHA reported ok on empty output (missing file)")
+	}
+	if _, ok := parseSHA("   \n"); ok {
+		t.Error("parseSHA reported ok on whitespace-only output")
 	}
 }
 
