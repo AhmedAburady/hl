@@ -52,7 +52,7 @@ func TestWriteLocalFilePrunesOldBackups(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "Caddyfile")
 	// Writing past the cap must settle the backups/ dir at maxLocalBackups.
-	for i := 0; i < maxLocalBackups+5; i++ {
+	for i := range maxLocalBackups + 5 {
 		if err := WriteLocalFile(path, fmt.Sprintf("v%d", i)); err != nil {
 			t.Fatalf("write %d: %v", i, err)
 		}

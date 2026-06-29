@@ -235,8 +235,8 @@ You edit the Caddyfile directly — add a block, add its annotation — then run
 | --- | --- |
 | `hl sync` | Deploy the Caddyfile and reconcile DNS from annotations |
 | `hl pull` | Download the live remote Caddyfile to the local file |
-| `hl status` | Show hosts + the pending DNS plan (read-only) |
-| `hl dns list` | List hl-managed records (`--zone` defaults to Caddyfile zones; `--all` for every record) |
+| `hl status` | Show the LOCAL/DNS/CADDY drift matrix + the pending DNS plan (read-only) |
+| `hl list` | List Technitium DNS records (`--zone` defaults to Caddyfile zones; `--all` for every record) |
 | `hl config init` | Create the config file (interactive wizard on a TTY, template otherwise) |
 | `hl config show` | Print effective config (token redacted) |
 

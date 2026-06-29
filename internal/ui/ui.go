@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/AhmedAburady/hl/internal/caddy"
 	"github.com/AhmedAburady/hl/internal/reconcile"
 	"github.com/AhmedAburady/hl/internal/technitium"
 	"github.com/charmbracelet/lipgloss"
@@ -124,10 +123,147 @@ func RenderPlan(p reconcile.Plan) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+type Mark int
+
+const (
+	MarkNone Mark = iota
+	MarkOK
+	MarkMissing
+	MarkDrift
+	MarkConflict
+	MarkUntracked
+	MarkNA
+	MarkUnknown
+)
+
+func (m Mark) glyph() string {
+	switch m {
+	case MarkOK:
+		return "✓"
+	case MarkMissing:
+		return "✗"
+	case MarkDrift:
+		return "~"
+	case MarkConflict:
+		return "!"
+	case MarkUntracked:
+		return "•"
+	case MarkNA:
+		return "—"
+	case MarkUnknown:
+		return "?"
+	default:
+		return ""
+	}
+}
+
+func (m Mark) color() lipgloss.Color {
+	switch m {
+	case MarkOK:
+		return green
+	case MarkMissing:
+		return red
+	case MarkDrift:
+		return yellow
+	case MarkConflict:
+		return orange
+	case MarkUntracked:
+		return blue
+	default:
+		return muted
+	}
+}
+
+func (m Mark) style() lipgloss.Style {
+	return cellStyle.Align(lipgloss.Center).Foreground(m.color())
+}
+
+type StatusRow struct {
+	Host              string
+	Local, DNS, Caddy Mark
+}
+
+func termWidth() int {
+	if !stdoutIsTTY {
+		return 0
+	}
+	w, _, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil || w <= 0 {
+		return 0
+	}
+	return w
+}
+
+func renderTable(headers []string, rows [][]string, style func(row, col int) lipgloss.Style) string {
+	t := table.New().
+		Border(lipgloss.RoundedBorder()).
+		BorderStyle(borderStyle).
+		Headers(headers...).
+		Rows(rows...).
+		StyleFunc(style)
+	s := t.String()
+	if w := termWidth(); w > 0 && lipgloss.Width(s) > w {
+		return t.Width(w).Wrap(true).String()
+	}
+	return s
+}
+
+func RenderStatus(rows []StatusRow) string {
+	trows := make([][]string, len(rows))
+	for i, r := range rows {
+		trows[i] = []string{strconv.Itoa(i + 1), r.Host, r.Local.glyph(), r.DNS.glyph(), r.Caddy.glyph()}
+	}
+	style := func(r, c int) lipgloss.Style {
+		switch {
+		case r == table.HeaderRow:
+			return headerCellStyle
+		case c == 2:
+			return rows[r].Local.style()
+		case c == 3:
+			return rows[r].DNS.style()
+		case c == 4:
+			return rows[r].Caddy.style()
+		default:
+			return cellStyle
+		}
+	}
+	return renderTable([]string{"#", "HOST", "L", "DNS", "CA"}, trows, style)
+}
+
+func StatusLegend(rows []StatusRow) string {
+	present := map[Mark]bool{}
+	for _, r := range rows {
+		present[r.Local] = true
+		present[r.DNS] = true
+		present[r.Caddy] = true
+	}
+	notable := []struct {
+		m     Mark
+		label string
+	}{
+		{MarkMissing, "missing"},
+		{MarkDrift, "drift"},
+		{MarkConflict, "conflict"},
+		{MarkUntracked, "untracked"},
+		{MarkUnknown, "unknown"},
+	}
+	var parts []string
+	for _, n := range notable {
+		if present[n.m] {
+			glyph := lipgloss.NewStyle().Foreground(n.m.color()).Render(n.m.glyph())
+			parts = append(parts, glyph+mutedStyle.Render(" "+n.label))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, mutedStyle.Render("   "))
+}
+
 // RenderRecords renders DNS records as one bordered table per zone, each under a
 // zone heading. With all set, a leading "●" column marks (and green-tints) the
 // records hl manages.
-func RenderRecords(records []technitium.Record, all bool, tag string) string {
+func RenderRecords(records []technitium.Record, all bool, tag string, local map[string]bool) string {
 	byZone := map[string][]technitium.Record{}
 	var zones []string
 	for _, r := range records {
@@ -145,79 +281,53 @@ func RenderRecords(records []technitium.Record, all bool, tag string) string {
 		}
 		b.WriteString(headingStyle.Render(z))
 		b.WriteString("\n")
-		b.WriteString(renderZoneTable(byZone[z], all, tag))
+		b.WriteString(renderZoneTable(byZone[z], all, tag, local))
 	}
 	return b.String()
 }
 
-func renderZoneTable(records []technitium.Record, all bool, tag string) string {
+func renderZoneTable(records []technitium.Record, all bool, tag string, local map[string]bool) string {
 	managed := make([]bool, len(records))
 	rows := make([][]string, len(records))
 	for i, r := range records {
 		managed[i] = r.Comments == tag
 		name := hyperlink("https://"+r.Name, r.Name)
-		base := []string{name, r.Type, strconv.Itoa(r.TTL), recordValue(r)}
+		loc := ""
+		if local[reconcile.NameKey(r.Name)] {
+			loc = "✓"
+		}
+		row := []string{strconv.Itoa(i + 1)}
 		if all {
 			mark := ""
 			if managed[i] {
 				mark = "●"
 			}
-			rows[i] = append([]string{mark}, base...)
-		} else {
-			rows[i] = base
+			row = append(row, mark)
 		}
+		row = append(row, name, r.Type, strconv.Itoa(r.TTL), recordValue(r), loc)
+		rows[i] = row
 	}
 
-	headers := []string{"NAME", "TYPE", "TTL", "VALUE"}
+	headers := []string{"#"}
 	if all {
-		headers = append([]string{""}, headers...)
+		headers = append(headers, "")
 	}
-	t := table.New().
-		Border(lipgloss.RoundedBorder()).
-		BorderStyle(borderStyle).
-		Headers(headers...).
-		Rows(rows...).
-		StyleFunc(func(r, _ int) lipgloss.Style {
-			if r == table.HeaderRow {
-				return headerCellStyle
-			}
-			if all && r >= 0 && r < len(managed) && managed[r] {
-				return cellStyle.Foreground(green)
-			}
-			return cellStyle
-		})
-	return t.String()
-}
+	headers = append(headers, "NAME", "TYPE", "TTL", "VALUE", "L")
 
-// RenderHosts renders the Caddy site blocks and their DNS intent as a table.
-func RenderHosts(sites []caddy.Site) string {
-	rows := make([][]string, len(sites))
-	for i, s := range sites {
-		up := s.Upstream
-		if up == "" {
-			up = "—"
-		}
-		dns := "—"
-		if s.DNS.Present {
-			dns = s.DNS.Name
-			if s.DNS.Type != "" {
-				dns = s.DNS.Type + " " + dns
-			}
-		}
-		rows[i] = []string{s.Host, up, dns}
-	}
-	t := table.New().
-		Border(lipgloss.RoundedBorder()).
-		BorderStyle(borderStyle).
-		Headers("HOST", "UPSTREAM", "DNS").
-		Rows(rows...).
-		StyleFunc(func(r, _ int) lipgloss.Style {
-			if r == table.HeaderRow {
-				return headerCellStyle
-			}
+	locCol := len(headers) - 1
+	style := func(r, c int) lipgloss.Style {
+		switch {
+		case r == table.HeaderRow:
+			return headerCellStyle
+		case c == locCol && r >= 0 && r < len(records) && local[reconcile.NameKey(records[r].Name)]:
+			return cellStyle.Align(lipgloss.Center).Foreground(green)
+		case all && r >= 0 && r < len(managed) && managed[r]:
+			return cellStyle.Foreground(green)
+		default:
 			return cellStyle
-		})
-	return t.String()
+		}
+	}
+	return renderTable(headers, rows, style)
 }
 
 func recordValue(r technitium.Record) string {

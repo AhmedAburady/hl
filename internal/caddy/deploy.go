@@ -220,7 +220,7 @@ const validateRCMarker = "__hl_validate_rc:"
 // The validator's exit status is captured via a trailing marker so a non-zero
 // exit does not surface as an SSH transport error.
 func runValidator(ctx context.Context, t sshx.Target, vcmd string) (output string, rejected bool, err error) {
-	wrapped := vcmd + "; printf '\\n" + validateRCMarker + "%d\\n' \"$?\""
+	wrapped := "{ " + vcmd + "; } 2>&1; printf '\\n" + validateRCMarker + "%d\\n' \"$?\""
 	out, err := sshx.Run(ctx, t, wrapped)
 	if err != nil {
 		// The marker never ran: this is a transport/shell failure, not a verdict.
@@ -368,7 +368,8 @@ func Deploy(ctx context.Context, cfg config.Caddy, force bool) (output string, c
 		stageCmd(sudo, rp, rp, content),
 	)
 	if out, err := sshx.Run(ctx, t, promote); err != nil {
-		return out, false, fmt.Errorf("write %s: %w", rp, err)
+		restoreBackup(ctx, t, sudo, backup, rp)
+		return out, false, fmt.Errorf("write %s (restored previous config): %w", rp, err)
 	}
 
 	reload := remote.ReloadCmd
@@ -382,11 +383,19 @@ func Deploy(ctx context.Context, cfg config.Caddy, force bool) (output string, c
 	if err != nil {
 		// Restore the backup and re-run reload so a failed restart still leaves
 		// Caddy up on the good config.
-		_, _ = sshx.Run(ctx, t, fmt.Sprintf("%smv -f %s %s", sudo, shellQuote(backup), shellQuote(rp)))
-		_, _ = sshx.Run(ctx, t, reload)
+		restoreBackup(ctx, t, sudo, backup, rp)
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		_, _ = sshx.Run(rctx, t, reload)
+		cancel()
 		return out, false, fmt.Errorf("reload failed (restored previous config): %w", err)
 	}
 	return out, true, nil
+}
+
+func restoreBackup(ctx context.Context, t sshx.Target, sudo, backup, rp string) {
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
+	_, _ = sshx.Run(rctx, t, fmt.Sprintf("%smv -f %s %s 2>/dev/null || true", sudo, shellQuote(backup), shellQuote(rp)))
 }
 
 // shellQuote single-quotes s for safe use in a remote shell command, escaping

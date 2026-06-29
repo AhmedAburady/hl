@@ -6,28 +6,21 @@ import (
 
 	"github.com/AhmedAburady/hl/internal/caddy"
 	"github.com/AhmedAburady/hl/internal/config"
+	"github.com/AhmedAburady/hl/internal/reconcile"
 	"github.com/AhmedAburady/hl/internal/technitium"
 	"github.com/AhmedAburady/hl/internal/ui"
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
 )
 
-func newDNSCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "dns",
-		Short: "Inspect Technitium DNS records",
-	}
-	cmd.AddCommand(newDNSListCmd())
-	return cmd
-}
-
-func newDNSListCmd() *cobra.Command {
+func newListCmd() *cobra.Command {
 	var (
 		zone string
 		all  bool
 	)
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List hl-managed records (use --all for every record in the zone)",
+		Short: "List Technitium DNS records (hl-managed by default; --all for every record)",
 		RunE: func(c *cobra.Command, _ []string) error {
 			cfg, err := loadCfg()
 			if err != nil {
@@ -55,18 +48,34 @@ func newDNSListCmd() *cobra.Command {
 			}
 			tag := cfg.Caddy.ManagedTag
 
-			// One unreadable/absent zone (e.g. an annotation for a zone not yet
-			// created) must not hide the others — warn and keep going.
+			local := localDeclaredFQDNs(cfg)
+			out(c, "%s", ui.Info("local: %s    dns: %s", cfg.Caddy.LocalFile, cfg.Technitium.URL))
+
+			type zoneResult struct {
+				recs []technitium.Record
+				err  error
+			}
+			results := make([]zoneResult, len(zones))
+			var g errgroup.Group
+			g.SetLimit(8)
+			for i, z := range zones {
+				g.Go(func() error {
+					recs, err := cl.ListRecords(c.Context(), z, "")
+					results[i] = zoneResult{recs, err}
+					return nil
+				})
+			}
+			_ = g.Wait()
+
 			var records []technitium.Record
 			var failed int
-			for _, z := range zones {
-				recs, err := cl.ListRecords(c.Context(), z, "")
-				if err != nil {
+			for i, z := range zones {
+				if results[i].err != nil {
 					failed++
-					out(c, "%s", ui.Warn("zone %s: %v", z, err))
+					out(c, "%s", ui.Warn("zone %s: %v", z, results[i].err))
 					continue
 				}
-				for _, r := range recs {
+				for _, r := range results[i].recs {
 					if all || r.Comments == tag {
 						records = append(records, r)
 					}
@@ -85,7 +94,7 @@ func newDNSListCmd() *cobra.Command {
 				return nil
 			}
 
-			out(c, "%s", ui.RenderRecords(records, all, tag))
+			out(c, "%s", ui.RenderRecords(records, all, tag, local))
 			if all {
 				out(c, "%s", ui.Info("● = managed by hl (%s)", tag))
 			}
@@ -123,4 +132,25 @@ func zonesFromCaddyfile(cfg *config.Config) ([]string, error) {
 	}
 	sort.Strings(zones)
 	return zones, nil
+}
+
+func localDeclaredFQDNs(cfg *config.Config) map[string]bool {
+	set := map[string]bool{}
+	content, err := caddy.ReadLocalFile(cfg.Caddy.LocalFile)
+	if err != nil {
+		return set
+	}
+	sites, err := caddy.ParseSites(content)
+	if err != nil {
+		return set
+	}
+	for _, s := range sites {
+		if !s.DNS.Present {
+			continue
+		}
+		if d, err := reconcile.Resolve(s.DNS); err == nil {
+			set[reconcile.NameKey(d.Domain)] = true
+		}
+	}
+	return set
 }

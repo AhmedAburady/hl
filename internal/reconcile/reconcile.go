@@ -250,6 +250,8 @@ func nameKey(name string) string {
 	return strings.ToLower(strings.TrimSuffix(name, "."))
 }
 
+func NameKey(name string) string { return nameKey(name) }
+
 // sameValue compares record values, normalizing the trailing dot for CNAME
 // targets (Technitium may store them with or without it).
 func sameValue(t technitium.RecordType, a, b string) bool {

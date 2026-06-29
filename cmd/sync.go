@@ -157,52 +157,42 @@ configuration is never touched; this only reports whether the file is valid.`,
 	}
 }
 
-// reconcileDNS derives desired records from the Caddyfile content and brings the
-// Technitium zone(s) into line, printing the plan. With dryRun it only prints;
-// with adopt it overwrites records hl does not already manage.
-func reconcileDNS(c *cobra.Command, cfg *config.Config, content string, dryRun, noPrune, adopt bool) error {
+func computeDNSPlan(c *cobra.Command, cfg *config.Config, content string, noPrune, adopt bool) (desired []reconcile.Desired, plan reconcile.Plan, actual []technitium.Record, cl *technitium.Client, skip bool, reason string, err error) {
 	sites, err := caddy.ParseSites(content)
 	if err != nil {
-		return err
+		return nil, reconcile.Plan{}, nil, nil, false, "", err
 	}
-	desired, err := reconcile.DeriveDesired(sites)
+	desired, err = reconcile.DeriveDesired(sites)
 	if err != nil {
-		return err
+		return nil, reconcile.Plan{}, nil, nil, false, "", err
 	}
 	if len(desired) == 0 {
-		// Never prune from an empty or missing Caddyfile: with no site blocks at
-		// all this is almost certainly a misconfiguration, and reconciling would
-		// delete every managed record. Removing annotations from a file that still
-		// has site blocks IS a legitimate "drop these records" signal, so that
-		// case (sites present, token set) falls through to reconcile below.
 		if strings.TrimSpace(content) == "" || len(sites) == 0 {
-			out(c, "%s", ui.Info("DNS: no site blocks in %s; skipping reconcile (not pruning)", cfg.Caddy.LocalFile))
-			return nil
+			return desired, reconcile.Plan{}, nil, nil, true, fmt.Sprintf("no site blocks in %s; skipping reconcile (not pruning)", cfg.Caddy.LocalFile), nil
 		}
-		// No annotations and no token: nothing to manage, and we won't force the
-		// user to configure a token just to be told there is nothing to do.
 		if cfg.Technitium.Token == "" {
-			out(c, "%s", ui.Info("DNS: no managed records declared in %s", cfg.Caddy.LocalFile))
-			return nil
+			return desired, reconcile.Plan{}, nil, nil, true, fmt.Sprintf("no managed records declared in %s", cfg.Caddy.LocalFile), nil
 		}
 	}
-	cl, err := technitiumClient(c, cfg)
+	cl, err = technitiumClient(c, cfg)
 	if err != nil {
-		return err
+		return desired, reconcile.Plan{}, nil, nil, false, "", err
 	}
-	actual, err := listZoneRecords(c, cl)
+	actual, err = listZoneRecords(c, cl)
 	if err != nil {
-		return err
+		return desired, reconcile.Plan{}, nil, nil, false, "", err
 	}
-
-	plan := reconcile.BuildPlan(desired, actual, cfg.Caddy.ManagedTag, adopt)
+	plan = reconcile.BuildPlan(desired, actual, cfg.Caddy.ManagedTag, adopt)
 	if noPrune {
 		plan.Delete = nil
 	}
+	return desired, plan, actual, cl, false, "", nil
+}
 
+func printDNSPlan(c *cobra.Command, plan reconcile.Plan, managedCount int, dryRun bool) {
 	if plan.Empty() && len(plan.Conflict) == 0 {
-		out(c, "%s", ui.OK("DNS up to date (%d managed records)", len(desired)))
-		return nil
+		out(c, "%s", ui.OK("DNS up to date (%d managed records)", managedCount))
+		return
 	}
 	if dryRun {
 		out(c, "%s", ui.Heading("DNS plan (dry-run, nothing applied)"))
@@ -216,11 +206,27 @@ func reconcileDNS(c *cobra.Command, cfg *config.Config, content string, dryRun, 
 		out(c, "%s", ui.Info("  to overwrite same-type records; a cross-type collision (e.g. a CNAME"))
 		out(c, "%s", ui.Info("  over an existing A or TXT) must be removed by hand first."))
 	}
+}
+
+// reconcileDNS derives desired records from the Caddyfile content and brings the
+// Technitium zone(s) into line, printing the plan. With dryRun it only prints;
+// with adopt it overwrites records hl does not already manage.
+func reconcileDNS(c *cobra.Command, cfg *config.Config, content string, dryRun, noPrune, adopt bool) error {
+	desired, plan, _, cl, skip, reason, err := computeDNSPlan(c, cfg, content, noPrune, adopt)
+	if err != nil {
+		return err
+	}
+	if skip {
+		out(c, "%s", ui.Info("DNS: %s", reason))
+		return nil
+	}
+
+	printDNSPlan(c, plan, len(desired), dryRun)
 	if dryRun {
 		return nil
 	}
 	if plan.Empty() {
-		return nil // only conflicts, which are not applied without --adopt
+		return nil
 	}
 	if err := plan.Apply(c.Context(), cl, cfg.Caddy.ManagedTag); err != nil {
 		return err
