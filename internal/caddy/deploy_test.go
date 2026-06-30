@@ -1,11 +1,55 @@
 package caddy
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestClassifyServiceStatus(t *testing.T) {
+	noise := errors.New("exit status 3")
+	cases := []struct {
+		name       string
+		out        string
+		runErr     error
+		wantActive bool
+		wantStatus string
+		wantErr    bool
+	}{
+		{"active", "active\n", nil, true, "active", false},
+		{"inactive plain", "inactive\n", noise, false, "inactive", false},
+		{"inactive with stderr noise", "inactive\nWarning: failed to connect to bus\n", noise, false, "inactive", false},
+		{"failed", "failed\n", noise, false, "failed", false},
+		{"transport error text", "ssh: connect to host caddy.home port 22: Connection refused", noise, false, "", true},
+		{"empty output", "", noise, false, "", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			active, status, err := classifyServiceStatus(c.out, c.runErr)
+			if active != c.wantActive || status != c.wantStatus || (err != nil) != c.wantErr {
+				t.Fatalf("classifyServiceStatus(%q) = (%v, %q, %v), want (%v, %q, err=%v)", c.out, active, status, err, c.wantActive, c.wantStatus, c.wantErr)
+			}
+		})
+	}
+}
+
+func TestClassifyValidatorExit(t *testing.T) {
+	transport := errors.New("ssh transport")
+	if _, rejected, err := classifyValidatorExit("", 1, transport); !rejected || err != nil {
+		t.Errorf("exit 1: rejected=%v err=%v, want rejected, no err", rejected, err)
+	}
+	for _, code := range []int{126, 127} {
+		_, rejected, err := classifyValidatorExit("", code, transport)
+		if rejected || err == nil {
+			t.Errorf("exit %d: rejected=%v err=%v, want not-rejected with run error", code, rejected, err)
+		}
+	}
+	if _, rejected, err := classifyValidatorExit("", 255, transport); rejected || !errors.Is(err, transport) {
+		t.Errorf("exit 255: rejected=%v err=%v, want not-rejected with transport error", rejected, err)
+	}
+}
 
 func TestWriteLocalFileBacksUpExistingFile(t *testing.T) {
 	dir := t.TempDir()

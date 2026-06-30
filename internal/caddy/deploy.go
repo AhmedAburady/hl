@@ -220,7 +220,11 @@ func runValidator(ctx context.Context, t sshx.Target, vcmd string) (output strin
 	if !ok {
 		return out, false, runErr
 	}
-	switch code := ee.ExitCode(); code {
+	return classifyValidatorExit(out, ee.ExitCode(), runErr)
+}
+
+func classifyValidatorExit(out string, code int, runErr error) (output string, rejected bool, err error) {
+	switch code {
 	case 126, 127:
 		return out, false, fmt.Errorf("validator command could not run (exit %d) — is it installed on the host and runnable under the SSH user?", code)
 	case 255:
@@ -372,9 +376,13 @@ func ServiceActive(ctx context.Context, remote config.Remote, service string) (b
 	if err != nil {
 		return false, "", err
 	}
-	out, err := sshx.Run(ctx, t, fmt.Sprintf("systemctl is-active %s", shellQuote(service)))
-	status := strings.TrimSpace(out)
-	if err == nil {
+	out, runErr := sshx.Run(ctx, t, fmt.Sprintf("systemctl is-active %s", shellQuote(service)))
+	return classifyServiceStatus(out, runErr)
+}
+
+func classifyServiceStatus(out string, runErr error) (bool, string, error) {
+	status := firstNonEmptyLine(out)
+	if runErr == nil {
 		return status == "active", status, nil
 	}
 	switch status {
@@ -384,7 +392,16 @@ func ServiceActive(ctx context.Context, remote config.Remote, service string) (b
 	if status != "" {
 		return false, "", errors.New(status)
 	}
-	return false, "", err
+	return false, "", runErr
+}
+
+func firstNonEmptyLine(s string) string {
+	for line := range strings.SplitSeq(s, "\n") {
+		if t := strings.TrimSpace(line); t != "" {
+			return t
+		}
+	}
+	return ""
 }
 
 func restoreBackup(ctx context.Context, t sshx.Target, sudo, backup, rp string) bool {
