@@ -143,19 +143,6 @@ func TestValidateCmdRejectsOwnConfig(t *testing.T) {
 	}
 }
 
-func TestExtractRC(t *testing.T) {
-	body, rc, ok := extractRC("line one\nline two\n" + validateRCMarker + "127\n")
-	if !ok || rc != 127 {
-		t.Fatalf("extractRC rc = %d ok = %v, want 127 true", rc, ok)
-	}
-	if body != "line one\nline two" {
-		t.Errorf("extractRC body = %q, want stripped of marker", body)
-	}
-	if _, _, ok := extractRC("no marker here"); ok {
-		t.Error("extractRC reported ok with no marker present")
-	}
-}
-
 func TestContentSHA256MatchesSha256sum(t *testing.T) {
 	// Known vector: sha256sum of "hello\n" (the trailing newline is significant).
 	if got := contentSHA256("hello\n"); got != "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03" {

@@ -219,7 +219,7 @@ func buildRecordRows(local, remote []caddy.Site, plan reconcile.Plan, remoteOK, 
 		}
 		seen[reconcile.NameKey(d.Domain)] = true
 
-		rem := ui.MarkNA
+		var rem ui.Mark
 		switch {
 		case !remoteOK:
 			rem = ui.MarkUnknown

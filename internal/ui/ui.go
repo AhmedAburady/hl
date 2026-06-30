@@ -1,14 +1,10 @@
 // Package ui centralizes terminal presentation: lipgloss styles, status
-// messages, the styled DNS plan and host-status renderers, and a pretty slog
-// handler.
+// messages, and the styled DNS plan and record renderers.
 package ui
 
 import (
-	"context"
 	"fmt"
 	"image/color"
-	"io"
-	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -28,12 +24,10 @@ var (
 	yellow = lipgloss.Color("#ffff00")
 	pink   = lipgloss.Color("#FF79C6")
 	orange = lipgloss.Color("#FFB86C")
-	blue   = lipgloss.Color("#8BE9FD")
 	muted  = lipgloss.Color("#626262")
 	text   = lipgloss.Color("#cccccc")
 
 	headingStyle = lipgloss.NewStyle().Bold(true).Foreground(accent)
-	accentStyle  = lipgloss.NewStyle().Foreground(accent)
 	successStyle = lipgloss.NewStyle().Foreground(green)
 	warnStyle    = lipgloss.NewStyle().Foreground(yellow)
 	mutedStyle   = lipgloss.NewStyle().Foreground(muted)
@@ -248,7 +242,7 @@ func renderRecordZone(rows []RecordRow) string {
 	for i, r := range rows {
 		trows[i] = []string{
 			strconv.Itoa(i + 1),
-			r.Record,
+			shortName(r.Record, r.Zone),
 			dash(r.Value),
 			dash(r.Proxy),
 			r.Local.glyph(),
@@ -271,7 +265,7 @@ func renderRecordZone(rows []RecordRow) string {
 			if strings.TrimSpace(rows[r].Proxy) == "" {
 				return cellStyle.Foreground(muted)
 			}
-			return cellStyle.Foreground(yellow)
+			return cellStyle.Foreground(text)
 		case 4:
 			return rows[r].Local.style()
 		case 5:
@@ -321,58 +315,17 @@ func dash(s string) string {
 	return s
 }
 
-// LogHandler is a slog.Handler that renders records as a styled level badge plus
-// message and dimmed key=value attrs, replacing slog's default text output.
-type LogHandler struct {
-	w     io.Writer
-	level slog.Level
-	attrs []slog.Attr
-}
-
-// NewLogHandler returns a styled slog handler writing to w at or above level.
-func NewLogHandler(w io.Writer, level slog.Level) *LogHandler {
-	return &LogHandler{w: w, level: level}
-}
-
-func (h *LogHandler) Enabled(_ context.Context, l slog.Level) bool { return l >= h.level }
-
-func (h *LogHandler) Handle(_ context.Context, r slog.Record) error {
-	var b strings.Builder
-	b.WriteString(levelBadge(r.Level))
-	b.WriteString(" ")
-	b.WriteString(r.Message)
-	for _, a := range h.attrs {
-		b.WriteString(" " + mutedStyle.Render(a.Key+"="+a.Value.String()))
+func shortName(record, zone string) string {
+	if zone == "" {
+		return record
 	}
-	r.Attrs(func(a slog.Attr) bool {
-		b.WriteString(" " + mutedStyle.Render(a.Key+"="+a.Value.String()))
-		return true
-	})
-	b.WriteString("\n")
-	_, err := io.WriteString(h.w, b.String())
-	return err
-}
-
-func (h *LogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	nh := *h
-	nh.attrs = append(append([]slog.Attr{}, h.attrs...), attrs...)
-	return &nh
-}
-
-func (h *LogHandler) WithGroup(string) slog.Handler { return h }
-
-func levelBadge(l slog.Level) string {
-	var c color.Color
-	var label string
-	switch {
-	case l >= slog.LevelError:
-		c, label = pink, "ERROR"
-	case l >= slog.LevelWarn:
-		c, label = yellow, "WARN"
-	case l >= slog.LevelInfo:
-		c, label = blue, "INFO"
-	default:
-		c, label = muted, "DEBUG"
+	if strings.EqualFold(record, zone) {
+		return "@"
 	}
-	return lipgloss.NewStyle().Bold(true).Foreground(c).Render(label)
+	suffix := "." + zone
+	if strings.HasSuffix(strings.ToLower(record), strings.ToLower(suffix)) {
+		return record[:len(record)-len(suffix)]
+	}
+	return record
 }
+

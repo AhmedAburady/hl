@@ -131,6 +131,7 @@ caddy:
     agent_socket: ""              # ssh-agent socket; empty falls back to $SSH_AUTH_SOCK
     remote_path: /etc/caddy/Caddyfile
     reload_cmd: "systemctl restart caddy"   # run on the host after the file is written (sudo auto-added for non-root)
+    validate_cmd: "caddy adapt --adapter caddyfile"   # validate a staged copy before promoting it; leave empty to skip
 ```
 
 There are no DNS defaults in config: the Caddyfile is the sole source of truth, so
@@ -219,18 +220,23 @@ the local copy on a fresh machine.
 ### `hl list` — drift at a glance, changing nothing
 
 ```sh
-hl list              # compare the local Caddyfile, DNS, and the deployed Caddyfile
-hl list --no-remote  # skip the SSH fetch of the remote Caddyfile (CA shows ?)
+hl list                  # compare the local Caddyfile, DNS, and the deployed Caddyfile
+hl list --no-remote      # skip the SSH fetch of the remote Caddyfile (RE shows ?)
+hl list --zone at3ch.com # only records in one zone
+hl list --format json    # machine-readable output (full FQDNs, no styling)
 ```
 
-Prints a per-host matrix of the three places a host can live — the local
-Caddyfile (`L`), Technitium DNS (`DNS`), and the Caddyfile deployed on the Caddy
-host (`CA`, fetched over SSH) — with `✓` in sync, `✗` missing, `~` drift, `!`
-conflict, and `—` not applicable. It covers only the hosts hl manages, and
-wildcard cert blocks (`*.example.com`) are excluded. Below the matrix it prints
-the pending DNS plan (`+` create, `~` update, `-` delete, `!` conflict), then a
-key naming the `L`/`DNS`/`CA` sources. It is read-only — nothing is deployed or
-modified.
+Prints the managed DNS records grouped by zone — one table per zone with columns
+`# | RECORD | VALUE | ADDRESS | L | DNS | RE`. `RECORD` is the short name under
+the zone heading (`@` for the apex), `VALUE` is the record value, and `ADDRESS`
+is the block's reverse-proxy upstream. The last three columns show where each
+record lives — declared locally (`L`), present in Technitium (`DNS`), and on the
+Caddyfile deployed to the Caddy host (`RE`, fetched over SSH) — with `✓` in sync,
+`✗` missing, `~` drift, `!` conflict, `—` not applicable, and `?` unknown. It
+covers only the records hl manages, and wildcard cert blocks (`*.example.com`)
+are excluded. Below the tables it prints the pending DNS plan (`+` create, `~`
+update, `-` delete, `!` conflict), then a key naming the `L`/`DNS`/`RE` sources.
+It is read-only — nothing is deployed or modified.
 
 You edit the Caddyfile directly — add a block, add its annotation — then run
 `hl sync`. There is no `add` command: the file is the source of truth.
@@ -252,7 +258,7 @@ resolving. It exits non-zero if either check fails, so it works as a gate
 | --- | --- |
 | `hl sync` | Deploy the Caddyfile and reconcile DNS from annotations |
 | `hl pull` | Download the live remote Caddyfile to the local file |
-| `hl list` | Show the L/DNS/CA drift matrix + the pending DNS plan (read-only) |
+| `hl list` | Show managed records by zone with L/DNS/RE drift + the pending DNS plan (read-only) |
 | `hl status` | Health check: Caddy up/reachable and Technitium reachable/resolving (exits non-zero on failure) |
 | `hl config init` | Create the config file (interactive wizard on a TTY, template otherwise) |
 | `hl config show` | Print effective config (token redacted) |

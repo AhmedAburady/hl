@@ -123,7 +123,7 @@ func TestListRecords_Decodes(t *testing.T) {
 			},
 		})
 	})
-	recs, err := c.ListRecords(context.Background(), "home.lab", "")
+	recs, err := c.ListRecords(context.Background(), "home.lab")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

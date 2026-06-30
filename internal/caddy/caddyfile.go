@@ -1,60 +1,9 @@
 package caddy
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 )
-
-// ErrReverseProxyBlock is returned when an existing site block uses the
-// block form of reverse_proxy and the caller did not pass force.
-var ErrReverseProxyBlock = errors.New("existing reverse_proxy is a block; pass --force to replace")
-
-// UpsertResult describes what UpsertReverseProxy did.
-type UpsertResult struct {
-	Changed  bool
-	Updated  bool // updated an existing block
-	Created  bool // appended a new block
-	Host     string
-	Upstream string
-}
-
-// UpsertReverseProxy ensures a site block for host exists in content with a
-// single-line `reverse_proxy <upstream>` directive. If a block for host
-// already exists, its simple reverse_proxy directive is updated in place; if
-// it uses the block form, an error is returned unless force replaces it. Other
-// directives in the block are preserved.
-func UpsertReverseProxy(content, host, upstream string, force bool) (string, *UpsertResult, error) {
-	host = strings.TrimSpace(host)
-	upstream = strings.TrimSpace(upstream)
-	if host == "" {
-		return "", nil, errors.New("host is required")
-	}
-	if upstream == "" {
-		return "", nil, errors.New("upstream is required")
-	}
-
-	lines := splitLines(content)
-	blocks := parseTopLevelBlocks(lines)
-
-	idx := findBlock(blocks, host)
-	res := &UpsertResult{Host: host, Upstream: upstream}
-
-	if idx >= 0 {
-		out, changed, err := updateBlock(lines, blocks[idx], upstream, force)
-		if err != nil {
-			return "", nil, err
-		}
-		res.Updated = true
-		res.Changed = changed
-		return joinLines(out), res, nil
-	}
-
-	out := appendNewBlock(lines, host, upstream)
-	res.Created = true
-	res.Changed = true
-	return joinLines(out), res, nil
-}
 
 // Site is a parsed top-level site block: its host label, the single-line
 // reverse_proxy upstream (empty if none or block-form), and the DNS directive
@@ -87,42 +36,6 @@ func ParseSites(content string) ([]Site, error) {
 		})
 	}
 	return sites, nil
-}
-
-// UpsertDNSAnnotation inserts or replaces the DNS directive line in the comment
-// group directly above host's block. Other comments in the group are preserved.
-func UpsertDNSAnnotation(content, host string, a DNSAnnotation) (string, error) {
-	host = strings.TrimSpace(host)
-	if !a.Present || strings.TrimSpace(a.Name) == "" {
-		return "", errors.New("DNS annotation requires a record name")
-	}
-	lines := splitLines(content)
-	blocks := parseTopLevelBlocks(lines)
-	idx := findBlock(blocks, host)
-	if idx < 0 {
-		return "", fmt.Errorf("no site block for host %s", host)
-	}
-	directive := formatDNSAnnotation(a)
-
-	// Find an existing directive line within the comment group above the block.
-	start := commentGroupStart(lines, blocks[idx].openLine)
-	for i := start; i < blocks[idx].openLine; i++ {
-		text, ok := commentText(lines[i])
-		if !ok {
-			continue
-		}
-		if _, isDirective, _ := parseDirectiveLine(text); isDirective {
-			out := append([]string(nil), lines...)
-			out[i] = directive
-			return joinLines(out), nil
-		}
-	}
-
-	// None present: insert directly above the opening line.
-	out := append([]string(nil), lines[:blocks[idx].openLine]...)
-	out = append(out, directive)
-	out = append(out, lines[blocks[idx].openLine:]...)
-	return joinLines(out), nil
 }
 
 // commentGroupStart returns the index of the first line in the contiguous run of
@@ -291,109 +204,6 @@ func normalizeLabel(s string) string {
 	return strings.Trim(fields[0], "\"")
 }
 
-func findBlock(blocks []siteBlock, host string) int {
-	for i, b := range blocks {
-		if b.label == host {
-			return i
-		}
-	}
-	return -1
-}
-
-// ----- editing -----
-
-// updateBlock updates the reverse_proxy directive inside an existing block.
-func updateBlock(lines []string, b siteBlock, upstream string, force bool) ([]string, bool, error) {
-	// Find a top-level (relative depth 0) reverse_proxy directive in the body.
-	relDepth := 0
-	rpLine := -1
-	for i := b.openLine + 1; i < b.closeLine; i++ {
-		braces := braceRunes(lines[i])
-		// A directive at relDepth 0 must be evaluated before counting braces
-		// on this line that belong to a nested block.
-		if relDepth == 0 {
-			if first := firstField(stripComment(lines[i])); first == "reverse_proxy" {
-				rpLine = i
-				break
-			}
-		}
-		relDepth += countBraces(braces)
-		if relDepth < 0 {
-			relDepth = 0
-		}
-	}
-
-	newDirective := "reverse_proxy " + upstream
-
-	if rpLine >= 0 {
-		raw := lines[rpLine]
-		if endsWithOpenBrace(stripComment(raw)) {
-			// block form: reverse_proxy { ... }
-			if !force {
-				return nil, false, fmt.Errorf("%w (host %s)", ErrReverseProxyBlock, b.label)
-			}
-			return replaceReverseProxyBlock(lines, rpLine, newDirective)
-		}
-		indent := leadingIndent(raw)
-		proposed := indent + newDirective
-		if raw == proposed {
-			return lines, false, nil
-		}
-		out := append([]string(nil), lines...)
-		out[rpLine] = proposed
-		return out, true, nil
-	}
-
-	// No reverse_proxy directive: insert one right after the opening line.
-	indent := bodyIndent(lines, b)
-	out := append([]string(nil), lines[:b.openLine+1]...)
-	out = append(out, indent+newDirective)
-	out = append(out, lines[b.openLine+1:]...)
-	return out, true, nil
-}
-
-// replaceReverseProxyBlock replaces the block-form reverse_proxy (from rpLine
-// to its matching close brace) with a single-line directive.
-func replaceReverseProxyBlock(lines []string, rpLine int, newDirective string) ([]string, bool, error) {
-	depth := 0
-	end := -1
-	for i := rpLine; i < len(lines); i++ {
-		braces := braceRunes(lines[i])
-		// If this is the first line, the directive keyword precedes the {.
-		depth += countBraces(braces)
-		if depth <= 0 {
-			end = i
-			break
-		}
-	}
-	if end < 0 {
-		return nil, false, errors.New("unbalanced reverse_proxy block")
-	}
-	indent := leadingIndent(lines[rpLine])
-	out := append([]string(nil), lines[:rpLine]...)
-	out = append(out, indent+newDirective)
-	out = append(out, lines[end+1:]...)
-	return out, true, nil
-}
-
-func appendNewBlock(lines []string, host, upstream string) []string {
-	block := []string{
-		host + " {",
-		"\treverse_proxy " + upstream,
-		"}",
-	}
-	out := append([]string(nil), lines...)
-	// ensure a blank line separates the new block from preceding content
-	if len(out) > 0 {
-		last := strings.TrimSpace(out[len(out)-1])
-		if last != "" {
-			out = append(out, "")
-		}
-	}
-	out = append(out, block...)
-	return out
-}
-
 // ----- helpers -----
 
 func firstField(line string) string {
@@ -424,27 +234,6 @@ func countBraces(braces []byte) int {
 	return n
 }
 
-func leadingIndent(line string) string {
-	for i, r := range line {
-		if r != ' ' && r != '\t' {
-			return line[:i]
-		}
-	}
-	return line
-}
-
-// bodyIndent picks a sensible indent for new directives: the indent of the
-// first non-empty body line, or a tab otherwise.
-func bodyIndent(lines []string, b siteBlock) string {
-	for i := b.openLine + 1; i < b.closeLine; i++ {
-		t := strings.TrimSpace(stripComment(lines[i]))
-		if t != "" {
-			return leadingIndent(lines[i])
-		}
-	}
-	return "\t"
-}
-
 // splitLines splits on \n and drops a trailing empty element produced by a
 // final newline so round-tripping is stable.
 func splitLines(s string) []string {
@@ -453,8 +242,4 @@ func splitLines(s string) []string {
 		lines = lines[:len(lines)-1]
 	}
 	return lines
-}
-
-func joinLines(lines []string) string {
-	return strings.Join(lines, "\n") + "\n"
 }

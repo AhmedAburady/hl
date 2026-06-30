@@ -294,7 +294,7 @@ func listZoneRecords(c *cobra.Command, cl *technitium.Client) ([]technitium.Reco
 
 	var all []technitium.Record
 	for _, z := range zones {
-		recs, err := cl.ListRecords(c.Context(), z, "")
+		recs, err := cl.ListRecords(c.Context(), z)
 		if err != nil {
 			return nil, fmt.Errorf("list zone %s: %w", z, err)
 		}

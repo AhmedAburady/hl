@@ -11,7 +11,7 @@ Key facts:
 - Build the runnable binary as `hl`: `go build -o hl .`. Compile-all: `go build ./...`.
 - Verify before finishing: `go vet ./...` and `go test ./...`. Modernize with `go fix ./...` (safe, analysis-based).
 - Entry point is `main.go` → `cmd.Root()` → `fang.Execute` (Charm Fang on top of Cobra). All commands are `newXxxCmd()` factories in `cmd/` registered in `cmd/root.go`.
-- Domain logic is in `internal/`: `config` (Viper + `ResolveSecret` for token), `caddy` (Caddyfile parser, DNS annotations, SSH deploy via base64|tee+sudo), `technitium` (HTTP API client), `reconcile` (desired-state derivation + diff/apply — the heart of sync), `sshx` (runs remote commands by shelling out to the system `ssh` binary).
+- Domain logic is in `internal/`: `config` (native YAML via `go.yaml.in/yaml/v3`, defaults + `HLDNS_*` env overrides, `ResolveSecret` for token), `caddy` (Caddyfile parser, DNS annotations, SSH deploy via base64|tee+sudo), `technitium` (HTTP API client), `reconcile` (desired-state derivation + diff/apply — the heart of sync), `sshx` (runs remote commands by shelling out to the system `ssh` binary).
 - DNS reconcile is ownership-scoped: records `hl` creates carry the `caddy.managed_tag` comment (default `managed-by:hl`); only tagged records are ever updated or pruned. The one exception is `hl sync --adopt`, which overwrites an existing **same-type** untagged record to take ownership of it (a single atomic `AddRecord`); it never deletes an untagged record of a different type. Without `--adopt`, an annotation that collides with an untagged record is reported as a conflict and skipped (and its name is protected from pruning). Do not widen untagged-record mutation beyond this.
 - Config lives at `~/.config/hl/config.yaml` (or `$XDG_CONFIG_HOME/hl/config.yaml` if set); env override prefix is `HLDNS_` (dots → underscores). The Technitium API token is created once in the web UI and stored in `technitium.token`; `config.ResolveSecret` resolves it at use time (literal, `${ENV}`, or an `op://` 1Password reference via `op read`). There is no login command.
 
@@ -19,7 +19,7 @@ Key facts:
 
 Most changes are either a new/changed subcommand in `cmd/` or a change to one
 of the `internal/` packages. Prefer reusing the existing helpers
-(`caddy.UpsertReverseProxy`, `caddy.UpsertDNSAnnotation`, `caddy.ParseSites`,
+(`caddy.ParseSites`,
 `caddy.Deploy`, `reconcile.DeriveDesired`/`BuildPlan`/`Apply`,
 `technitium.Client.AddRecord`/`DeleteRecord`, the shared `runSync`/`reconcileDNS`
 in `cmd/sync.go`, `sshx.Run`) over reimplementing them. The CLI is
@@ -34,14 +34,17 @@ template otherwise.
    load config via `loadCfg()` (cached per process). Do not introduce a second
    config-loading path.
 
-2. **Caddyfile editing stays idempotent.** All Caddyfile mutations go through
-   `internal/caddy` (`UpsertReverseProxy`, `UpsertDNSAnnotation`); reads go
-   through `ParseSites`. The parser finds top-level site blocks by brace depth
-   (ignoring braces inside quotes and `#` comments) and detects a DNS directive
-   as the comment directly above a block whose first token is a bare word and
-   which contains ≥1 `key=value`. If you change the block/annotation format,
-   update `caddyfile_test.go` / `annotation_test.go` to cover insert / update /
-   idempotent / force / nested-block / prose-comment / round-trip cases.
+2. **Caddyfiles are read-only to hl.** The CLI never edits a Caddyfile in
+   place; the local file is the source of truth, authored by the user, and
+   deployed whole. All reads go through `caddy.ParseSites`. The parser finds
+   top-level site blocks by brace depth (ignoring braces inside quotes and `#`
+   comments) and detects a DNS directive as the comment directly above a block
+   whose first token is a bare word and which contains ≥1 `key=value`. If you
+   change the block/annotation format, update `caddyfile_test.go` /
+   `annotation_test.go` to cover the parse cases (hosts/upstreams, upstream
+   forms, nested-block, with-directive, prose-comment, unknown-key,
+   multiple-directives). Do not reintroduce a Caddyfile write/mutation path
+   unless a command actually needs one.
 
 3. **DNS records are A and CNAME only.** Type resolution lives in
    `reconcile.Resolve`; `technitium.Client.AddRecord`/`DeleteRecord` send
@@ -64,7 +67,7 @@ template otherwise.
    `<set>`. Keep it that way.
 
 6. **Use Go 1.26 idioms.** Prefer `errors.AsType[T]` over `errors.As`
-   (used for `*fs.PathError`), `log/slog` for diagnostics, and `strings.Cut`.
+   (used for `*fs.PathError` and `*exec.ExitError`) and `strings.Cut`.
    Run `go fix ./...` before finishing.
 
 7. **Verify before finishing.** Run `go build ./...`, `go vet ./...`, and
@@ -93,16 +96,17 @@ template otherwise.
 
 Given: "let a block opt out of the reverse-proxy upstream check"
 Expected approach:
-1. Add the key to `annotationKeys` and the parse switch in `internal/caddy/annotation.go`, plus a field on `DNSAnnotation`, and emit it in `formatDNSAnnotation`.
-2. Cover detection + round-trip in `internal/caddy/annotation_test.go`.
+1. Add the key to `annotationKeys` and the parse switch in `internal/caddy/annotation.go`, plus a field on `DNSAnnotation`.
+2. Cover detection in `internal/caddy/annotation_test.go`.
 3. Thread it into `reconcile.Resolve`/`Desired` if it affects the record, with a case in `internal/reconcile/reconcile_test.go`.
 4. Run `go build ./...`, `go vet ./...`, `go test ./...`. Fix all failures.
 
 ## Reference
 
 - `README.md` — human-facing install and usage docs, including the annotation grammar.
-- Config schema and env vars: see `internal/config/config.go` (`setDefaults`,
-  `Remote`/`Caddy`/`Technitium` structs) — the canonical source for field names.
+- Config schema and env vars: see `internal/config/config.go` (`defaultConfig`,
+  `applyEnv`, `Remote`/`Caddy`/`Technitium` structs) — the canonical source for
+  field names and the `HLDNS_*` override names.
 - Technitium API: `internal/technitium/client.go` (AddRecord → `/api/zones/records/add`,
   DeleteRecord → `/api/zones/records/delete`, ListRecords → `/api/zones/records/get`,
   ListZones → `/api/zones/list`). Auth is a UI-created API token (Bearer); no login.
