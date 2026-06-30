@@ -74,6 +74,9 @@ func runList(c *cobra.Command, cfg *config.Config, noRemote bool, zone, format s
 		_, plan, _, _, dnsSkip, dnsReason, dnsErr = computeDNSPlan(c, cfg, content, false, false)
 		return dnsErr
 	})
+	if err := c.Context().Err(); err != nil {
+		return err
+	}
 	if dnsErr != nil {
 		note(ui.Warn("DNS: could not build plan: %v", dnsErr))
 	}
@@ -88,6 +91,9 @@ func runList(c *cobra.Command, cfg *config.Config, noRemote bool, zone, format s
 			rc, rerr = caddy.ReadRemoteFile(ctx, cfg.Caddy.Remote)
 			return rerr
 		})
+		if err := c.Context().Err(); err != nil {
+			return err
+		}
 		switch {
 		case rerr != nil:
 			note(ui.Warn("RE: could not read remote Caddyfile: %v", rerr))

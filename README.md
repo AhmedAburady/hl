@@ -232,11 +232,13 @@ the zone heading (`@` for the apex), `VALUE` is the record value, and `ADDRESS`
 is the block's reverse-proxy upstream. The last three columns show where each
 record lives — declared locally (`L`), present in Technitium (`DNS`), and on the
 Caddyfile deployed to the Caddy host (`RE`, fetched over SSH) — with `✓` in sync,
-`✗` missing, `~` drift, `!` conflict, `—` not applicable, and `?` unknown. It
-covers only the records hl manages, and wildcard cert blocks (`*.example.com`)
-are excluded. Below the tables it prints the pending DNS plan (`+` create, `~`
-update, `-` delete, `!` conflict), then a key naming the `L`/`DNS`/`RE` sources.
-It is read-only — nothing is deployed or modified.
+`✗` missing, `~` drift, `!` conflict, `—` not applicable, and `?` unknown. The
+pending DNS actions are read straight off these marks (`✗` create, `~` update,
+`!` conflict, and orphan rows delete). It covers only the records hl manages, and
+wildcard cert blocks (`*.example.com`) are excluded. Below the tables it prints a
+legend for any notable marks and a key naming the `L`/`DNS`/`RE` sources. It is
+read-only — nothing is deployed or modified. Run `hl sync --dry-run` for the
+explicit `+`/`~`/`-` plan.
 
 You edit the Caddyfile directly — add a block, add its annotation — then run
 `hl sync`. There is no `add` command: the file is the source of truth.
