@@ -45,11 +45,15 @@ func TestBuildRecordRows(t *testing.T) {
 		site("missing.example.com", "missing", "example.com", "10.0.0.2:8080", true),
 		site("drift.example.com", "drift", "example.com", "10.0.0.3:8080", true),
 		site("conflict.example.com", "conflict", "example.com", "10.0.0.4:8080", true),
+		site("stale.example.com", "stale", "example.com", "10.0.0.7:8080", true),
 	}
 	plan := reconcile.Plan{
-		Create:   []reconcile.Action{action("missing.example.com", "example.com")},
-		Update:   []reconcile.Action{action("drift.example.com", "example.com")},
-		Delete:   []reconcile.Action{action("orphan.example.com", "example.com")},
+		Create: []reconcile.Action{action("missing.example.com", "example.com")},
+		Update: []reconcile.Action{action("drift.example.com", "example.com")},
+		Delete: []reconcile.Action{
+			action("orphan.example.com", "example.com"),
+			action("stale.example.com", "example.com"),
+		},
 		Conflict: []reconcile.Action{action("conflict.example.com", "example.com")},
 	}
 
@@ -65,6 +69,7 @@ func TestBuildRecordRows(t *testing.T) {
 		{"conflict.example.com", "1.2.3.4", "10.0.0.4:8080", ui.MarkOK, ui.MarkConflict, ui.MarkOK},
 		{"undeployed.example.com", "1.2.3.4", "10.0.0.5:8080", ui.MarkOK, ui.MarkOK, ui.MarkMissing},
 		{"orphan.example.com", "9.9.9.9", "", ui.MarkNA, ui.MarkOK, ui.MarkNA},
+		{"stale.example.com", "9.9.9.9", "", ui.MarkNA, ui.MarkOK, ui.MarkOK},
 	}
 	for _, tc := range cases {
 		r, ok := rowFor(rows, tc.record)

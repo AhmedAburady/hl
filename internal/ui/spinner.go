@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
-	"charm.land/huh/v2/spinner"
 	"golang.org/x/term"
 )
+
+var spinnerFrames = []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
 
 func WithSpinner(ctx context.Context, msg string, fn func(context.Context) error) error {
 	if !term.IsTerminal(int(os.Stderr.Fd())) {
@@ -25,29 +27,30 @@ func WithSpinner(ctx context.Context, msg string, fn func(context.Context) error
 		opErr = fn(ctx)
 	}()
 
-	runErr := spinner.New().
-		Type(spinner.MiniDot).
-		Title(msg).
-		WithOutput(os.Stderr).
-		Context(ctx).
-		ActionWithErr(func(c context.Context) error {
-			select {
-			case <-done:
-				return nil
-			case <-c.Done():
-				return c.Err()
-			}
-		}).
-		Run()
+	fmt.Fprint(os.Stderr, "\x1b[?25l")
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
 
-	if runErr != nil {
-		cancel()
-		<-done
-		if opErr != nil {
-			return opErr
-		}
-		return runErr
+	i := 0
+	draw := func() {
+		fmt.Fprintf(os.Stderr, "\r%c %s", spinnerFrames[i%len(spinnerFrames)], msg)
+		i++
 	}
+	draw()
+
+loop:
+	for {
+		select {
+		case <-done:
+			break loop
+		case <-ctx.Done():
+			break loop
+		case <-ticker.C:
+			draw()
+		}
+	}
+
+	fmt.Fprint(os.Stderr, "\r\x1b[K\x1b[?25h")
 	<-done
 	return opErr
 }

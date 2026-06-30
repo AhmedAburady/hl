@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/AhmedAburady/hl/internal/caddy"
 	"github.com/AhmedAburady/hl/internal/config"
@@ -69,10 +70,41 @@ func runList(c *cobra.Command, cfg *config.Config, noRemote bool, zone, format s
 		dnsSkip   bool
 		dnsReason string
 		dnsErr    error
+
+		remoteSites []caddy.Site
+		remoteOK    bool
+		remoteErr   error
 	)
-	_ = ui.WithSpinner(c.Context(), "reading DNS records…", func(context.Context) error {
-		_, plan, _, _, dnsSkip, dnsReason, dnsErr = computeDNSPlan(c, cfg, content, false, false)
-		return dnsErr
+	msg := "reading DNS records…"
+	if !noRemote {
+		msg = "reading DNS + remote Caddyfile…"
+	}
+	_ = ui.WithSpinner(c.Context(), msg, func(ctx context.Context) error {
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, plan, _, _, dnsSkip, dnsReason, dnsErr = computeDNSPlan(c, cfg, content, false, false)
+		}()
+		if !noRemote {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				rc, rerr := caddy.ReadRemoteFile(ctx, cfg.Caddy.Remote)
+				if rerr != nil {
+					remoteErr = fmt.Errorf("could not read remote Caddyfile: %w", rerr)
+					return
+				}
+				rs, perr := caddy.ParseSites(rc)
+				if perr != nil {
+					remoteErr = fmt.Errorf("could not parse remote Caddyfile: %w", perr)
+					return
+				}
+				remoteSites, remoteOK = rs, true
+			}()
+		}
+		wg.Wait()
+		return nil
 	})
 	if err := c.Context().Err(); err != nil {
 		return err
@@ -80,32 +112,10 @@ func runList(c *cobra.Command, cfg *config.Config, noRemote bool, zone, format s
 	if dnsErr != nil {
 		note(ui.Warn("DNS: could not build plan: %v", dnsErr))
 	}
-	dnsKnown := dnsErr == nil && !dnsSkip
-
-	var remoteSites []caddy.Site
-	remoteOK := false
-	if !noRemote {
-		var rc string
-		var rerr error
-		_ = ui.WithSpinner(c.Context(), "reading remote Caddyfile…", func(ctx context.Context) error {
-			rc, rerr = caddy.ReadRemoteFile(ctx, cfg.Caddy.Remote)
-			return rerr
-		})
-		if err := c.Context().Err(); err != nil {
-			return err
-		}
-		switch {
-		case rerr != nil:
-			note(ui.Warn("RE: could not read remote Caddyfile: %v", rerr))
-		default:
-			rs, perr := caddy.ParseSites(rc)
-			if perr != nil {
-				note(ui.Warn("RE: could not parse remote Caddyfile: %v", perr))
-			} else {
-				remoteSites, remoteOK = rs, true
-			}
-		}
+	if remoteErr != nil {
+		note(ui.Warn("RE: %v", remoteErr))
 	}
+	dnsKnown := dnsErr == nil && !dnsSkip
 
 	rows := buildRecordRows(localSites, remoteSites, plan, remoteOK, dnsKnown)
 	if zone != "" {
@@ -255,13 +265,22 @@ func buildRecordRows(local, remote []caddy.Site, plan reconcile.Plan, remoteOK, 
 		if !dnsKnown {
 			dns = ui.MarkUnknown
 		}
+		var rem ui.Mark
+		switch {
+		case !remoteOK:
+			rem = ui.MarkUnknown
+		case remoteHosts[reconcile.NameKey(a.Domain)]:
+			rem = ui.MarkOK
+		default:
+			rem = ui.MarkNA
+		}
 		rows = append(rows, ui.RecordRow{
 			Zone:   a.Zone,
 			Record: a.Domain,
 			Value:  a.Value,
 			Local:  ui.MarkNA,
 			DNS:    dns,
-			Remote: ui.MarkNA,
+			Remote: rem,
 		})
 	}
 
