@@ -1,56 +1,40 @@
 // Package ui centralizes terminal presentation: lipgloss styles, status
-// messages, the styled DNS plan/record/host renderers, and a pretty slog
-// handler. lipgloss auto-degrades to plain text when stdout is not a terminal,
-// so piped output stays clean.
+// messages, and the styled DNS plan and record renderers.
 package ui
 
 import (
-	"context"
 	"fmt"
-	"io"
-	"log/slog"
+	"image/color"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 
-	"github.com/AhmedAburady/hl/internal/caddy"
+	"charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/table"
 	"github.com/AhmedAburady/hl/internal/reconcile"
-	"github.com/AhmedAburady/hl/internal/technitium"
-	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/lipgloss/table"
 	"golang.org/x/term"
 )
 
 var stdoutIsTTY = term.IsTerminal(int(os.Stdout.Fd()))
 
-// hyperlink wraps text in an OSC 8 terminal hyperlink. On a non-TTY it returns
-// text unchanged so piped output stays clean.
-func hyperlink(url, text string) string {
-	if !stdoutIsTTY {
-		return text
-	}
-	return "\x1b]8;;" + url + "\x1b\\" + text + "\x1b]8;;\x1b\\"
-}
-
 var (
-	accent = lipgloss.Color("63")
-	green  = lipgloss.Color("42")
-	yellow = lipgloss.Color("214")
-	orange = lipgloss.Color("208")
-	red    = lipgloss.Color("203")
-	blue   = lipgloss.Color("39")
-	muted  = lipgloss.Color("243")
+	accent = lipgloss.Color("#7D56F4")
+	green  = lipgloss.Color("#00ff87")
+	cyan   = lipgloss.Color("#00d7ff")
+	yellow = lipgloss.Color("#ffff00")
+	pink   = lipgloss.Color("#FF79C6")
+	orange = lipgloss.Color("#FFB86C")
+	muted  = lipgloss.Color("#626262")
+	text   = lipgloss.Color("#cccccc")
 
 	headingStyle = lipgloss.NewStyle().Bold(true).Foreground(accent)
-	accentStyle  = lipgloss.NewStyle().Foreground(accent)
 	successStyle = lipgloss.NewStyle().Foreground(green)
 	warnStyle    = lipgloss.NewStyle().Foreground(yellow)
 	mutedStyle   = lipgloss.NewStyle().Foreground(muted)
 
 	createStyle   = lipgloss.NewStyle().Bold(true).Foreground(green)
 	updateStyle   = lipgloss.NewStyle().Bold(true).Foreground(yellow)
-	deleteStyle   = lipgloss.NewStyle().Bold(true).Foreground(red)
+	deleteStyle   = lipgloss.NewStyle().Bold(true).Foreground(pink)
 	conflictStyle = lipgloss.NewStyle().Bold(true).Foreground(orange)
 
 	borderStyle     = lipgloss.NewStyle().Foreground(muted)
@@ -62,11 +46,6 @@ var (
 // Heading renders a bold accented title.
 func Heading(format string, a ...any) string { return headingStyle.Render(fmt.Sprintf(format, a...)) }
 
-// Step renders an in-progress action line ("▸ …").
-func Step(format string, a ...any) string {
-	return accentStyle.Render("▸ ") + fmt.Sprintf(format, a...)
-}
-
 // OK renders a success line ("✓ …").
 func OK(format string, a ...any) string {
 	return successStyle.Render("✓ ") + fmt.Sprintf(format, a...)
@@ -75,6 +54,18 @@ func OK(format string, a ...any) string {
 // Warn renders a cautionary line ("! …").
 func Warn(format string, a ...any) string {
 	return warnStyle.Render("! ") + fmt.Sprintf(format, a...)
+}
+
+func CheckLine(label string, width int, ok bool, reason string) string {
+	mark := successStyle.Render("OK")
+	if !ok {
+		mark = lipgloss.NewStyle().Foreground(pink).Render("FAIL")
+	}
+	line := fmt.Sprintf("%-*s [%s]", width, label, mark)
+	if !ok && reason != "" {
+		line += " " + mutedStyle.Render(reason)
+	}
+	return line
 }
 
 // Info renders a muted, secondary line.
@@ -124,19 +115,115 @@ func RenderPlan(p reconcile.Plan) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// RenderRecords renders DNS records as one bordered table per zone, each under a
-// zone heading. With all set, a leading "●" column marks (and green-tints) the
-// records hl manages.
-func RenderRecords(records []technitium.Record, all bool, tag string) string {
-	byZone := map[string][]technitium.Record{}
+type Mark int
+
+const (
+	MarkNone Mark = iota
+	MarkOK
+	MarkMissing
+	MarkDrift
+	MarkConflict
+	MarkNA
+	MarkUnknown
+)
+
+func (m Mark) glyph() string {
+	switch m {
+	case MarkOK:
+		return "✓"
+	case MarkMissing:
+		return "✗"
+	case MarkDrift:
+		return "~"
+	case MarkConflict:
+		return "!"
+	case MarkNA:
+		return "—"
+	case MarkUnknown:
+		return "?"
+	default:
+		return ""
+	}
+}
+
+func (m Mark) Label() string {
+	switch m {
+	case MarkOK:
+		return "ok"
+	case MarkMissing:
+		return "missing"
+	case MarkDrift:
+		return "drift"
+	case MarkConflict:
+		return "conflict"
+	case MarkNA:
+		return "na"
+	case MarkUnknown:
+		return "unknown"
+	default:
+		return ""
+	}
+}
+
+func (m Mark) color() color.Color {
+	switch m {
+	case MarkOK:
+		return green
+	case MarkMissing:
+		return pink
+	case MarkDrift:
+		return yellow
+	case MarkConflict:
+		return orange
+	default:
+		return muted
+	}
+}
+
+func (m Mark) style() lipgloss.Style {
+	return cellStyle.Align(lipgloss.Center).Foreground(m.color())
+}
+
+type RecordRow struct {
+	Zone                 string
+	Record, Value, Proxy string
+	Local, DNS, Remote   Mark
+}
+
+func termWidth() int {
+	if !stdoutIsTTY {
+		return 0
+	}
+	w, _, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil || w <= 0 {
+		return 0
+	}
+	return w
+}
+
+func renderTable(headers []string, rows [][]string, style func(row, col int) lipgloss.Style) string {
+	t := table.New().
+		Border(lipgloss.RoundedBorder()).
+		BorderStyle(borderStyle).
+		Headers(headers...).
+		Rows(rows...).
+		StyleFunc(style)
+	s := t.String()
+	if w := termWidth(); w > 0 && lipgloss.Width(s) > w {
+		return t.Width(w).Wrap(true).String()
+	}
+	return s
+}
+
+func RenderRecords(rows []RecordRow) string {
 	var zones []string
-	for _, r := range records {
+	byZone := map[string][]RecordRow{}
+	for _, r := range rows {
 		if _, ok := byZone[r.Zone]; !ok {
 			zones = append(zones, r.Zone)
 		}
 		byZone[r.Zone] = append(byZone[r.Zone], r)
 	}
-	sort.Strings(zones)
 
 	var b strings.Builder
 	for i, z := range zones {
@@ -145,145 +232,100 @@ func RenderRecords(records []technitium.Record, all bool, tag string) string {
 		}
 		b.WriteString(headingStyle.Render(z))
 		b.WriteString("\n")
-		b.WriteString(renderZoneTable(byZone[z], all, tag))
+		b.WriteString(renderRecordZone(byZone[z]))
 	}
 	return b.String()
 }
 
-func renderZoneTable(records []technitium.Record, all bool, tag string) string {
-	managed := make([]bool, len(records))
-	rows := make([][]string, len(records))
-	for i, r := range records {
-		managed[i] = r.Comments == tag
-		name := hyperlink("https://"+r.Name, r.Name)
-		base := []string{name, r.Type, strconv.Itoa(r.TTL), recordValue(r)}
-		if all {
-			mark := ""
-			if managed[i] {
-				mark = "●"
-			}
-			rows[i] = append([]string{mark}, base...)
-		} else {
-			rows[i] = base
+func renderRecordZone(rows []RecordRow) string {
+	trows := make([][]string, len(rows))
+	for i, r := range rows {
+		trows[i] = []string{
+			strconv.Itoa(i + 1),
+			shortName(r.Record, r.Zone),
+			dash(r.Value),
+			dash(r.Proxy),
+			r.Local.glyph(),
+			r.DNS.glyph(),
+			r.Remote.glyph(),
 		}
 	}
-
-	headers := []string{"NAME", "TYPE", "TTL", "VALUE"}
-	if all {
-		headers = append([]string{""}, headers...)
+	style := func(r, c int) lipgloss.Style {
+		if r == table.HeaderRow {
+			return headerCellStyle
+		}
+		switch c {
+		case 0:
+			return cellStyle.Foreground(muted)
+		case 1:
+			return cellStyle.Foreground(cyan)
+		case 2:
+			return cellStyle.Foreground(green)
+		case 3:
+			if strings.TrimSpace(rows[r].Proxy) == "" {
+				return cellStyle.Foreground(muted)
+			}
+			return cellStyle.Foreground(text)
+		case 4:
+			return rows[r].Local.style()
+		case 5:
+			return rows[r].DNS.style()
+		case 6:
+			return rows[r].Remote.style()
+		default:
+			return cellStyle.Foreground(text)
+		}
 	}
-	t := table.New().
-		Border(lipgloss.RoundedBorder()).
-		BorderStyle(borderStyle).
-		Headers(headers...).
-		Rows(rows...).
-		StyleFunc(func(r, _ int) lipgloss.Style {
-			if r == table.HeaderRow {
-				return headerCellStyle
-			}
-			if all && r >= 0 && r < len(managed) && managed[r] {
-				return cellStyle.Foreground(green)
-			}
-			return cellStyle
-		})
-	return t.String()
+	return renderTable([]string{"#", "RECORD", "VALUE", "ADDRESS", "L", "DNS", "RE"}, trows, style)
 }
 
-// RenderHosts renders the Caddy site blocks and their DNS intent as a table.
-func RenderHosts(sites []caddy.Site) string {
-	rows := make([][]string, len(sites))
-	for i, s := range sites {
-		up := s.Upstream
-		if up == "" {
-			up = "—"
-		}
-		dns := "—"
-		if s.DNS.Present {
-			dns = s.DNS.Name
-			if s.DNS.Type != "" {
-				dns = s.DNS.Type + " " + dns
-			}
-		}
-		rows[i] = []string{s.Host, up, dns}
+func RecordLegend(rows []RecordRow) string {
+	present := map[Mark]bool{}
+	for _, r := range rows {
+		present[r.Local] = true
+		present[r.DNS] = true
+		present[r.Remote] = true
 	}
-	t := table.New().
-		Border(lipgloss.RoundedBorder()).
-		BorderStyle(borderStyle).
-		Headers("HOST", "UPSTREAM", "DNS").
-		Rows(rows...).
-		StyleFunc(func(r, _ int) lipgloss.Style {
-			if r == table.HeaderRow {
-				return headerCellStyle
-			}
-			return cellStyle
-		})
-	return t.String()
-}
-
-func recordValue(r technitium.Record) string {
-	if r.RData == nil {
+	notable := []struct {
+		m     Mark
+		label string
+	}{
+		{MarkMissing, "missing"},
+		{MarkDrift, "drift"},
+		{MarkConflict, "conflict"},
+		{MarkUnknown, "unknown"},
+	}
+	var parts []string
+	for _, n := range notable {
+		if present[n.m] {
+			glyph := lipgloss.NewStyle().Foreground(n.m.color()).Render(n.m.glyph())
+			parts = append(parts, glyph+mutedStyle.Render(" "+n.label))
+		}
+	}
+	if len(parts) == 0 {
 		return ""
 	}
-	for _, k := range []string{"ipAddress", "cname", "nameServer", "exchange", "text", "target"} {
-		if v, ok := r.RData[k]; ok {
-			return fmt.Sprintf("%v", v)
-		}
+	return strings.Join(parts, mutedStyle.Render("   "))
+}
+
+func dash(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "—"
 	}
-	return ""
+	return s
 }
 
-// LogHandler is a slog.Handler that renders records as a styled level badge plus
-// message and dimmed key=value attrs, replacing slog's default text output.
-type LogHandler struct {
-	w     io.Writer
-	level slog.Level
-	attrs []slog.Attr
-}
-
-// NewLogHandler returns a styled slog handler writing to w at or above level.
-func NewLogHandler(w io.Writer, level slog.Level) *LogHandler {
-	return &LogHandler{w: w, level: level}
-}
-
-func (h *LogHandler) Enabled(_ context.Context, l slog.Level) bool { return l >= h.level }
-
-func (h *LogHandler) Handle(_ context.Context, r slog.Record) error {
-	var b strings.Builder
-	b.WriteString(levelBadge(r.Level))
-	b.WriteString(" ")
-	b.WriteString(r.Message)
-	for _, a := range h.attrs {
-		b.WriteString(" " + mutedStyle.Render(a.Key+"="+a.Value.String()))
+func shortName(record, zone string) string {
+	if zone == "" {
+		return record
 	}
-	r.Attrs(func(a slog.Attr) bool {
-		b.WriteString(" " + mutedStyle.Render(a.Key+"="+a.Value.String()))
-		return true
-	})
-	b.WriteString("\n")
-	_, err := io.WriteString(h.w, b.String())
-	return err
-}
-
-func (h *LogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	nh := *h
-	nh.attrs = append(append([]slog.Attr{}, h.attrs...), attrs...)
-	return &nh
-}
-
-func (h *LogHandler) WithGroup(string) slog.Handler { return h }
-
-func levelBadge(l slog.Level) string {
-	var c lipgloss.Color
-	var label string
-	switch {
-	case l >= slog.LevelError:
-		c, label = red, "ERROR"
-	case l >= slog.LevelWarn:
-		c, label = yellow, "WARN"
-	case l >= slog.LevelInfo:
-		c, label = blue, "INFO"
-	default:
-		c, label = muted, "DEBUG"
+	if strings.EqualFold(record, zone) {
+		return "@"
 	}
-	return lipgloss.NewStyle().Bold(true).Foreground(c).Render(label)
+	suffix := "." + zone
+	if strings.HasSuffix(strings.ToLower(record), strings.ToLower(suffix)) {
+		return record[:len(record)-len(suffix)]
+	}
+	return record
 }
+

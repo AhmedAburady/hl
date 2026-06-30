@@ -4,13 +4,11 @@ import (
 	"context"
 	"errors"
 	"io"
-	"log/slog"
 	"os"
 	"runtime/debug"
 
+	"charm.land/fang/v2"
 	"github.com/AhmedAburady/hl/cmd"
-	"github.com/AhmedAburady/hl/internal/ui"
-	"github.com/charmbracelet/fang"
 )
 
 var version = "dev"
@@ -26,7 +24,6 @@ func resolveVersion() string {
 }
 
 func main() {
-	slog.SetDefault(slog.New(ui.NewLogHandler(os.Stderr, slog.LevelInfo)))
 	if err := fang.Execute(
 		context.Background(),
 		cmd.Root(),

@@ -9,9 +9,9 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -211,50 +211,27 @@ func validateCmd(cmd, sudo, staged string) (string, error) {
 	return v, nil
 }
 
-const validateRCMarker = "__hl_validate_rc:"
-
-// runValidator runs vcmd against the staged file and classifies the outcome.
-// rejected is true only when the validator ran and reported the file invalid; a
-// non-nil error means the validator could not run at all (missing binary, bad
-// flag, sudo/transport failure) — a different problem the user fixes differently.
-// The validator's exit status is captured via a trailing marker so a non-zero
-// exit does not surface as an SSH transport error.
 func runValidator(ctx context.Context, t sshx.Target, vcmd string) (output string, rejected bool, err error) {
-	wrapped := vcmd + "; printf '\\n" + validateRCMarker + "%d\\n' \"$?\""
-	out, err := sshx.Run(ctx, t, wrapped)
-	if err != nil {
-		// The marker never ran: this is a transport/shell failure, not a verdict.
-		return out, false, err
+	out, runErr := sshx.Run(ctx, t, vcmd)
+	if runErr == nil {
+		return out, false, nil
 	}
-	body, rc, ok := extractRC(out)
+	ee, ok := errors.AsType[*exec.ExitError](runErr)
 	if !ok {
-		return out, false, fmt.Errorf("validator produced no exit status")
+		return out, false, runErr
 	}
-	switch rc {
-	case 0:
-		return body, false, nil
-	case 126, 127:
-		return body, false, fmt.Errorf("validator command could not run (exit %d) — is it installed on the host and runnable under the SSH user?", rc)
-	default:
-		return body, true, nil
-	}
+	return classifyValidatorExit(out, ee.ExitCode(), runErr)
 }
 
-// extractRC pulls the trailing exit-status marker out of combined output,
-// returning the output without that line, the parsed code, and whether a marker
-// was found.
-func extractRC(out string) (body string, rc int, ok bool) {
-	lines := strings.Split(out, "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		line := strings.TrimSpace(lines[i])
-		if rest, found := strings.CutPrefix(line, validateRCMarker); found {
-			if n, err := strconv.Atoi(strings.TrimSpace(rest)); err == nil {
-				body = strings.Join(append(lines[:i], lines[i+1:]...), "\n")
-				return strings.TrimRight(body, "\n"), n, true
-			}
-		}
+func classifyValidatorExit(out string, code int, runErr error) (output string, rejected bool, err error) {
+	switch code {
+	case 126, 127:
+		return out, false, fmt.Errorf("validator command could not run (exit %d) — is it installed on the host and runnable under the SSH user?", code)
+	case 255:
+		return out, false, runErr
+	default:
+		return out, true, nil
 	}
-	return out, 0, false
 }
 
 // Validate stages the local Caddyfile to a temp path on the remote host and runs
@@ -368,7 +345,8 @@ func Deploy(ctx context.Context, cfg config.Caddy, force bool) (output string, c
 		stageCmd(sudo, rp, rp, content),
 	)
 	if out, err := sshx.Run(ctx, t, promote); err != nil {
-		return out, false, fmt.Errorf("write %s: %w", rp, err)
+		restored := restoreBackup(ctx, t, sudo, backup, rp)
+		return out, false, fmt.Errorf("write %s%s: %w", rp, restoredNote(restored), err)
 	}
 
 	reload := remote.ReloadCmd
@@ -382,11 +360,62 @@ func Deploy(ctx context.Context, cfg config.Caddy, force bool) (output string, c
 	if err != nil {
 		// Restore the backup and re-run reload so a failed restart still leaves
 		// Caddy up on the good config.
-		_, _ = sshx.Run(ctx, t, fmt.Sprintf("%smv -f %s %s", sudo, shellQuote(backup), shellQuote(rp)))
-		_, _ = sshx.Run(ctx, t, reload)
-		return out, false, fmt.Errorf("reload failed (restored previous config): %w", err)
+		restored := restoreBackup(ctx, t, sudo, backup, rp)
+		if restored {
+			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			_, _ = sshx.Run(rctx, t, reload)
+			cancel()
+		}
+		return out, false, fmt.Errorf("reload failed%s: %w", restoredNote(restored), err)
 	}
 	return out, true, nil
+}
+
+func ServiceActive(ctx context.Context, remote config.Remote, service string) (bool, string, error) {
+	t, _, err := remoteTarget(remote)
+	if err != nil {
+		return false, "", err
+	}
+	out, runErr := sshx.Run(ctx, t, fmt.Sprintf("systemctl is-active %s", shellQuote(service)))
+	return classifyServiceStatus(out, runErr)
+}
+
+func classifyServiceStatus(out string, runErr error) (bool, string, error) {
+	status := firstNonEmptyLine(out)
+	if runErr == nil {
+		return status == "active", status, nil
+	}
+	switch status {
+	case "inactive", "failed", "activating", "deactivating", "reloading", "unknown":
+		return false, status, nil
+	}
+	if status != "" {
+		return false, "", errors.New(status)
+	}
+	return false, "", runErr
+}
+
+func firstNonEmptyLine(s string) string {
+	for line := range strings.SplitSeq(s, "\n") {
+		if t := strings.TrimSpace(line); t != "" {
+			return t
+		}
+	}
+	return ""
+}
+
+func restoreBackup(ctx context.Context, t sshx.Target, sudo, backup, rp string) bool {
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
+	_, err := sshx.Run(rctx, t, fmt.Sprintf("%stest -f %s && %smv -f %s %s", sudo, shellQuote(backup), sudo, shellQuote(backup), shellQuote(rp)))
+	return err == nil
+}
+
+func restoredNote(restored bool) string {
+	if restored {
+		return " (restored previous config)"
+	}
+	return ""
 }
 
 // shellQuote single-quotes s for safe use in a remote shell command, escaping

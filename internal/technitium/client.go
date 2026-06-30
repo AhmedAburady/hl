@@ -220,19 +220,16 @@ func (r Record) Value() string {
 	return ""
 }
 
-// ListRecords returns records for a zone (optionally filtered to a domain).
-func (c *Client) ListRecords(ctx context.Context, zone, domain string) ([]Record, error) {
+// ListRecords returns every record in a zone.
+func (c *Client) ListRecords(ctx context.Context, zone string) ([]Record, error) {
 	if zone == "" {
 		return nil, errors.New("zone is required")
 	}
 	// The records/get endpoint requires a domain; with listZone=true it returns
-	// the whole zone, so default domain to the zone name when none is given.
-	if domain == "" {
-		domain = zone
-	}
+	// the whole zone, so domain is set to the zone name.
 	params := url.Values{}
 	params.Set("zone", zone)
-	params.Set("domain", domain)
+	params.Set("domain", zone)
 	params.Set("listZone", "true")
 
 	ar, err := c.do(ctx, "/api/zones/records/get", params)

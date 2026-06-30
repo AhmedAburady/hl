@@ -250,6 +250,8 @@ func nameKey(name string) string {
 	return strings.ToLower(strings.TrimSuffix(name, "."))
 }
 
+func NameKey(name string) string { return nameKey(name) }
+
 // sameValue compares record values, normalizing the trailing dot for CNAME
 // targets (Technitium may store them with or without it).
 func sameValue(t technitium.RecordType, a, b string) bool {
@@ -285,25 +287,4 @@ func (p Plan) Apply(ctx context.Context, cl *technitium.Client, tag string) erro
 		}
 	}
 	return nil
-}
-
-// String renders the plan as a human-readable diff.
-func (p Plan) String() string {
-	if p.Empty() && len(p.Conflict) == 0 {
-		return "DNS: no changes"
-	}
-	var b strings.Builder
-	for _, a := range p.Create {
-		fmt.Fprintf(&b, "  + %-6s %-32s %s\n", a.Type, a.Domain, a.Value)
-	}
-	for _, a := range p.Update {
-		fmt.Fprintf(&b, "  ~ %-6s %-32s %s\n", a.Type, a.Domain, a.Value)
-	}
-	for _, a := range p.Delete {
-		fmt.Fprintf(&b, "  - %-6s %-32s %s\n", a.Type, a.Domain, a.Value)
-	}
-	for _, a := range p.Conflict {
-		fmt.Fprintf(&b, "  ! %-6s %-32s %s (exists, not managed by hl)\n", a.Type, a.Domain, a.Value)
-	}
-	return strings.TrimRight(b.String(), "\n")
 }

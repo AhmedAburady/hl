@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sort"
@@ -75,8 +76,15 @@ func runSync(c *cobra.Command, cfg *config.Config, o syncOpts) error {
 				out(c, "%s", ui.Info("[dry-run] run 'hl validate' to check the Caddyfile on the host"))
 			}
 		} else {
-			out(c, "%s", ui.Step("Deploying to %s …", cfg.Caddy.Remote.Host))
-			deployOut, changed, err := caddy.Deploy(c.Context(), caddyCfg, o.force)
+			var (
+				deployOut string
+				changed   bool
+			)
+			err := ui.WithSpinner(c.Context(), fmt.Sprintf("deploying to %s…", cfg.Caddy.Remote.Host), func(ctx context.Context) error {
+				var e error
+				deployOut, changed, e = caddy.Deploy(ctx, caddyCfg, o.force)
+				return e
+			})
 			if err != nil {
 				if errors.Is(err, caddy.ErrValidate) {
 					out(c, "%s", ui.Warn("Caddyfile is invalid — nothing deployed (live config untouched)."))
@@ -118,8 +126,12 @@ func validatePreview(c *cobra.Command, caddyCfg config.Caddy) error {
 	if strings.TrimSpace(caddyCfg.Remote.ValidateCmd) == "" {
 		return nil
 	}
-	out(c, "%s", ui.Step("Validating %s on %s …", caddyCfg.LocalFile, caddyCfg.Remote.Host))
-	vout, err := caddy.Validate(c.Context(), caddyCfg)
+	var vout string
+	err := ui.WithSpinner(c.Context(), fmt.Sprintf("validating on %s…", caddyCfg.Remote.Host), func(ctx context.Context) error {
+		var e error
+		vout, e = caddy.Validate(ctx, caddyCfg)
+		return e
+	})
 	if err != nil {
 		if errors.Is(err, caddy.ErrValidate) {
 			out(c, "%s", ui.Warn("Caddyfile is invalid."))
@@ -157,52 +169,42 @@ configuration is never touched; this only reports whether the file is valid.`,
 	}
 }
 
-// reconcileDNS derives desired records from the Caddyfile content and brings the
-// Technitium zone(s) into line, printing the plan. With dryRun it only prints;
-// with adopt it overwrites records hl does not already manage.
-func reconcileDNS(c *cobra.Command, cfg *config.Config, content string, dryRun, noPrune, adopt bool) error {
+func computeDNSPlan(c *cobra.Command, cfg *config.Config, content string, noPrune, adopt bool) (desired []reconcile.Desired, plan reconcile.Plan, actual []technitium.Record, cl *technitium.Client, skip bool, reason string, err error) {
 	sites, err := caddy.ParseSites(content)
 	if err != nil {
-		return err
+		return nil, reconcile.Plan{}, nil, nil, false, "", err
 	}
-	desired, err := reconcile.DeriveDesired(sites)
+	desired, err = reconcile.DeriveDesired(sites)
 	if err != nil {
-		return err
+		return nil, reconcile.Plan{}, nil, nil, false, "", err
 	}
 	if len(desired) == 0 {
-		// Never prune from an empty or missing Caddyfile: with no site blocks at
-		// all this is almost certainly a misconfiguration, and reconciling would
-		// delete every managed record. Removing annotations from a file that still
-		// has site blocks IS a legitimate "drop these records" signal, so that
-		// case (sites present, token set) falls through to reconcile below.
 		if strings.TrimSpace(content) == "" || len(sites) == 0 {
-			out(c, "%s", ui.Info("DNS: no site blocks in %s; skipping reconcile (not pruning)", cfg.Caddy.LocalFile))
-			return nil
+			return desired, reconcile.Plan{}, nil, nil, true, fmt.Sprintf("no site blocks in %s; skipping reconcile (not pruning)", cfg.Caddy.LocalFile), nil
 		}
-		// No annotations and no token: nothing to manage, and we won't force the
-		// user to configure a token just to be told there is nothing to do.
 		if cfg.Technitium.Token == "" {
-			out(c, "%s", ui.Info("DNS: no managed records declared in %s", cfg.Caddy.LocalFile))
-			return nil
+			return desired, reconcile.Plan{}, nil, nil, true, fmt.Sprintf("no managed records declared in %s", cfg.Caddy.LocalFile), nil
 		}
 	}
-	cl, err := technitiumClient(c, cfg)
+	cl, err = technitiumClient(c, cfg)
 	if err != nil {
-		return err
+		return desired, reconcile.Plan{}, nil, nil, false, "", err
 	}
-	actual, err := listZoneRecords(c, cl)
+	actual, err = listZoneRecords(c, cl)
 	if err != nil {
-		return err
+		return desired, reconcile.Plan{}, nil, nil, false, "", err
 	}
-
-	plan := reconcile.BuildPlan(desired, actual, cfg.Caddy.ManagedTag, adopt)
+	plan = reconcile.BuildPlan(desired, actual, cfg.Caddy.ManagedTag, adopt)
 	if noPrune {
 		plan.Delete = nil
 	}
+	return desired, plan, actual, cl, false, "", nil
+}
 
+func printDNSPlan(c *cobra.Command, plan reconcile.Plan, managedCount int, dryRun bool) {
 	if plan.Empty() && len(plan.Conflict) == 0 {
-		out(c, "%s", ui.OK("DNS up to date (%d managed records)", len(desired)))
-		return nil
+		out(c, "%s", ui.OK("DNS up to date (%d managed records)", managedCount))
+		return
 	}
 	if dryRun {
 		out(c, "%s", ui.Heading("DNS plan (dry-run, nothing applied)"))
@@ -216,13 +218,43 @@ func reconcileDNS(c *cobra.Command, cfg *config.Config, content string, dryRun, 
 		out(c, "%s", ui.Info("  to overwrite same-type records; a cross-type collision (e.g. a CNAME"))
 		out(c, "%s", ui.Info("  over an existing A or TXT) must be removed by hand first."))
 	}
+}
+
+// reconcileDNS derives desired records from the Caddyfile content and brings the
+// Technitium zone(s) into line, printing the plan. With dryRun it only prints;
+// with adopt it overwrites records hl does not already manage.
+func reconcileDNS(c *cobra.Command, cfg *config.Config, content string, dryRun, noPrune, adopt bool) error {
+	var (
+		desired []reconcile.Desired
+		plan    reconcile.Plan
+		cl      *technitium.Client
+		skip    bool
+		reason  string
+		err     error
+	)
+	err = ui.WithSpinner(c.Context(), "reading DNS records…", func(context.Context) error {
+		var e error
+		desired, plan, _, cl, skip, reason, e = computeDNSPlan(c, cfg, content, noPrune, adopt)
+		return e
+	})
+	if err != nil {
+		return err
+	}
+	if skip {
+		out(c, "%s", ui.Info("DNS: %s", reason))
+		return nil
+	}
+
+	printDNSPlan(c, plan, len(desired), dryRun)
 	if dryRun {
 		return nil
 	}
 	if plan.Empty() {
-		return nil // only conflicts, which are not applied without --adopt
+		return nil
 	}
-	if err := plan.Apply(c.Context(), cl, cfg.Caddy.ManagedTag); err != nil {
+	if err := ui.WithSpinner(c.Context(), "applying DNS changes…", func(ctx context.Context) error {
+		return plan.Apply(ctx, cl, cfg.Caddy.ManagedTag)
+	}); err != nil {
 		return err
 	}
 	out(c, "%s", ui.OK("DNS reconciled — %d created, %d updated, %d deleted", len(plan.Create), len(plan.Update), len(plan.Delete)))
@@ -262,7 +294,7 @@ func listZoneRecords(c *cobra.Command, cl *technitium.Client) ([]technitium.Reco
 
 	var all []technitium.Record
 	for _, z := range zones {
-		recs, err := cl.ListRecords(c.Context(), z, "")
+		recs, err := cl.ListRecords(c.Context(), z)
 		if err != nil {
 			return nil, fmt.Errorf("list zone %s: %w", z, err)
 		}

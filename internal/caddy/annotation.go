@@ -2,7 +2,6 @@ package caddy
 
 import (
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 )
@@ -116,33 +115,4 @@ func commentText(line string) (string, bool) {
 		return "", false
 	}
 	return strings.TrimSpace(strings.TrimPrefix(t, "#")), true
-}
-
-// formatDNSAnnotation renders a directive line (without trailing newline),
-// including only the fields that are set. Name is always emitted.
-func formatDNSAnnotation(a DNSAnnotation) string {
-	parts := []string{"#", a.Name}
-	kv := map[string]string{}
-	if a.Type != "" {
-		kv["type"] = a.Type
-	}
-	if a.Zone != "" {
-		kv["zone"] = a.Zone
-	}
-	if a.Value != "" {
-		kv["value"] = a.Value
-	}
-	if a.TTL > 0 {
-		kv["ttl"] = strconv.Itoa(a.TTL)
-	}
-	// Stable key order for deterministic output.
-	keys := make([]string, 0, len(kv))
-	for k := range kv {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		parts = append(parts, k+"="+kv[k])
-	}
-	return strings.Join(parts, " ")
 }
