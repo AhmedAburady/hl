@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/url"
 	"sync"
 	"time"
 
@@ -87,13 +88,32 @@ func technitiumCheck(c *cobra.Command, cfg *config.Config) check {
 	if name == "" {
 		return check{label, true, ""}
 	}
+	host := technitiumDNSHost(cfg.Technitium.URL)
+	if host == "" {
+		return check{label, true, ""}
+	}
 	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
 	defer cancel()
-	addrs, rerr := net.DefaultResolver.LookupHost(ctx, name)
+	resolver := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, network, net.JoinHostPort(host, "53"))
+		},
+	}
+	addrs, rerr := resolver.LookupHost(ctx, name)
 	if rerr != nil || len(addrs) == 0 {
-		return check{label, false, fmt.Sprintf("API up but DNS not resolving: %v", rerr)}
+		return check{label, false, fmt.Sprintf("API up but Technitium did not resolve %s: %v", name, rerr)}
 	}
 	return check{label, true, ""}
+}
+
+func technitiumDNSHost(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
 }
 
 func firstManagedFQDN(cfg *config.Config) string {

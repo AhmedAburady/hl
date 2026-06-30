@@ -110,11 +110,13 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("read config %s: %w", path, err)
 	}
 
-	applyEnv(&c)
+	if err := applyEnv(&c); err != nil {
+		return nil, err
+	}
 	return &c, nil
 }
 
-func applyEnv(c *Config) {
+func applyEnv(c *Config) error {
 	setStr := func(env string, dst *string) {
 		if v, ok := os.LookupEnv(env); ok {
 			*dst = v
@@ -132,10 +134,13 @@ func applyEnv(c *Config) {
 	setStr("HLDNS_CADDY_REMOTE_RELOAD_CMD", &c.Caddy.Remote.ReloadCmd)
 	setStr("HLDNS_CADDY_REMOTE_VALIDATE_CMD", &c.Caddy.Remote.ValidateCmd)
 	if v, ok := os.LookupEnv("HLDNS_CADDY_REMOTE_PORT"); ok {
-		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
-			c.Caddy.Remote.Port = n
+		n, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil {
+			return fmt.Errorf("HLDNS_CADDY_REMOTE_PORT: invalid integer %q", v)
 		}
+		c.Caddy.Remote.Port = n
 	}
+	return nil
 }
 
 func (c *Config) Path() string { return c.path }

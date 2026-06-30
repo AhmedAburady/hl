@@ -75,3 +75,11 @@ func TestLoadEnvOverridesAllFields(t *testing.T) {
 		t.Errorf("validate_cmd override failed: %q", cfg.Caddy.Remote.ValidateCmd)
 	}
 }
+
+func TestLoadInvalidEnvPortErrors(t *testing.T) {
+	t.Setenv("HLDNS_CADDY_REMOTE_PORT", "not-a-number")
+	path := filepath.Join(t.TempDir(), "absent.yaml")
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected error for non-integer HLDNS_CADDY_REMOTE_PORT")
+	}
+}
